@@ -1,4 +1,6 @@
-#!/bin/bash
+#!/bin/sh
+
+HADOOP_USER="hadoop"
 
 HADOOP_SRC="/usr/local/src/hadoop"
 HADOOP_SRC_COMMON="$HADOOP_SRC/hadoop-common"
@@ -60,6 +62,9 @@ hadoop_install() {
 
     echo "$hadoop_build"
     echo $HADOOP_HOME
+
+    chown -R $HADOOP_USER:$HADOOP_USER $HADOOP_HOME
+    chown -R $HADOOP_USER:$HADOOP_USER $HADOOP_BUILDS
 
     echo "Hadoop new conf files $HADOOP_CONF"
     rm -rf $HADOOP_CONF
