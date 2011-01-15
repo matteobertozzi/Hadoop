@@ -78,6 +78,12 @@ def createWriter(path, key_class, value_class, metadata=None, compression_type=C
 
     return Writer(path, key_class, value_class, metadata, **kwargs)
 
+def createRecordWriter(path, key_class, value_class, metadata=None):
+    return Writer(path, key_class, value_class, metadata, compress=True)
+
+def createBlockWriter(path, key_class, value_class, metadata=None):
+    return Writer(path, key_class, value_class, metadata, compress=True, block_compress=True)
+
 class Writer(object):
     COMPRESSION_BLOCK_SIZE = 1000000
 
@@ -155,10 +161,6 @@ class Writer(object):
 
     def appendRaw(self, key, value):
         if self._block_compress:
-            def _compress(data):
-                self._codec.setInput(data)
-                return self._codec.compress()
-
             if self._block:
                 records, keys_len, keys, values_len, values = self._block
             else:
@@ -183,8 +185,7 @@ class Writer(object):
                 self.sync()
         else:
             if self._compress:
-                self._codec.setInput(value)
-                value = self._codec.compress()
+                value = self._codec.compress(value)
 
             key_length = len(key)
             value_length = len(value)
@@ -203,8 +204,7 @@ class Writer(object):
 
         if self._block_compress and self._block:
             def _writeBuffer(data_buf):
-                self._codec.setInput(data_buf.toByteArray())
-                buf = self._codec.compress()
+                buf = self._codec.compress(data_buf.toByteArray())
                 writeVInt(self._stream, len(buf))
                 self._stream.write(buf)
 
@@ -318,8 +318,7 @@ class Reader(object):
             def _readBuffer():
                 length = readVInt(self._stream)
                 buf = self._stream.read(length)
-                self._codec.setInput(buf)
-                return self._codec.inputStream()
+                return self._codec.decompressInputStream(buf)
 
             records = readVInt(self._stream)
             keys_len = _readBuffer()
@@ -454,8 +453,7 @@ class Reader(object):
         if not self._block_compressed:
             if self._decompress:
                 compress_data = self._record.read(self._record.size())
-                self._codec.setInput(compress_data)
-                value.readFields(self._codec.inputStream())
+                value.readFields(self._codec.decompressInputStream(compress_data))
             else:
                 value.readFields(self._record)
             assert self._record.size() == 0

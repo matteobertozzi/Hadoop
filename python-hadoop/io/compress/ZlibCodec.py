@@ -4,40 +4,15 @@ import zlib
 
 from io.InputStream import DataInputBuffer
 
-class ZlibCompressor(object):
-    def __init__(self):
-        self._data = None
-        self._offset = 0
-        self._length = 0
+class ZlibCodec:
+    def compress(self, data):
+        return zlib.compress(data)
 
-    def setInput(self, data, offset=0, length=0):
-        if data and not length:
-            length = len(data) - offset
+    def decompress(self, data):
+        return zlib.decompress(data)
 
-        self._data = data
-        self._offset = offset
-        self._length = length
+    def decompressInputStream(self, data):
+        return DataInputBuffer(zlib.decompress(data))
 
-    def compress(self):
-        return zlib.compress(self._data[self._offset:self._offset+self._length])
-
-class ZlibDecompressor(object):
-    def __init__(self):
-        self._data = None
-        self._offset = 0
-        self._length = 0
-
-    def setInput(self, data, offset=0, length=0):
-        if data and not length:
-            length = len(data) - offset
-
-        self._data = data
-        self._offset = offset
-        self._length = length
-
-    def decompress(self):
-        return zlib.decompress(self._data[self._offset:self._offset+self._length])
-
-    def inputStream(self):
-        return DataInputBuffer(self.decompress())
+DefaultCodec = ZlibCodec
 
