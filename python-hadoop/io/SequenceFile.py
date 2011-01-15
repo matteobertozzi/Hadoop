@@ -1,10 +1,15 @@
 #!/usr/bin/env python
 
+from hashlib import md5
+from uuid import uuid1
+from time import time
+import os
+
 from util.ReflectionUtils import hadoopClassFromName
 
 from compress import CodecPool
 
-from WritableUtils import readVInt
+from WritableUtils import readVInt, writeVInt
 from Writable import Writable
 from OutputStream import *
 from InputStream import *
@@ -16,10 +21,16 @@ CUSTOM_COMPRESS_VERSION = '\x05'
 VERSION_WITH_METADATA   = '\x06'
 VERSION = 'SEQ' + VERSION_WITH_METADATA
 
+SYNC_ESCAPE = -1
 SYNC_HASH_SIZE = 16
 SYNC_SIZE = 4 + SYNC_HASH_SIZE
 
-SYNC_ESCAPE = -1
+SYNC_INTERVAL = 100 * SYNC_SIZE
+
+class CompressionType:
+    NONE = 0
+    RECORD = 1
+    BLOCK  = 2
 
 class Metadata(Writable):
     def __init__(self, metadata=None):
@@ -50,11 +61,183 @@ class Metadata(Writable):
             value = Text()
             key.readFields(data_input)
             value.readFields(data_input)
-            self._metadata[key] = value
+            self._meta[key] = value
+
+def createWriter(path, key_class, value_class, metadata=None, compression_type=CompressionType.NONE):
+    kwargs = {}
+
+    if compression_type == CompressionType.NONE:
+        pass
+    elif compression_type == CompressionType.RECORD:
+        kwargs['compress'] = True
+    elif compression_type == CompressionType.BLOCK:
+        kwargs['compress'] = True
+        kwargs['block_compress'] = True
+    else:
+        raise NotImplementedError("Compression Type Not Supported")
+
+    return Writer(path, key_class, value_class, metadata, **kwargs)
 
 class Writer(object):
-    pass
+    COMPRESSION_BLOCK_SIZE = 1000000
 
+    def __init__(self, path, key_class, value_class, metadata, compress=False, block_compress=False):
+        if os.path.exists(path):
+            raise IOError("File %s already exists." % path)
+
+        self._key_class = key_class
+        self._value_class = value_class
+        self._compress = compress
+        self._block_compress = block_compress
+
+        if not metadata:
+            metadata = Metadata()
+        self._metadata = metadata
+
+        if self._compress or self._block_compress:
+            self._codec = CodecPool().getCompressor()
+        else:
+            self._codec = None
+
+        self._last_sync = 0
+        self._block = None
+
+        self._stream = DataOutputStream(FileOutputStream(path))
+
+        # sync is 16 random bytes
+        self._sync = md5('%s@%d' % (uuid1().bytes, int(time() * 1000))).digest()
+
+        self._writeFileHeader()
+
+    def close(self):
+        if self._block_compress:
+            self.sync()
+        self._stream.close()
+
+    def getCompressionCodec(self):
+        return self._codec
+
+    def getKeyClass(self):
+        return self._key_class
+
+    def getKeyClassName(self):
+        return '%s.%s' % (self._key_class.__module__, self._key_class.__name__)
+
+    def getValueClass(self):
+        return self._value_class
+
+    def getValueClassName(self):
+        return '%s.%s' % (self._value_class.__module__, self._value_class.__name__)
+
+    def isBlockCompressed(self):
+        return self._block_compress
+
+    def isCompressed(self):
+        return self._compress
+
+    def getLength(self):
+        return self._stream.getPos()
+    
+    def append(self, key, value):
+        if type(key) != self._key_class:
+            raise IOError("Wrong key class %s is not %s" % (type(key), self._key_class))
+
+        if type(value) != self._value_class:
+            raise IOError("Wrong Value class %s is not %s" % (type(key), self._key_class))
+
+        key_buffer = DataOutputBuffer()
+        key.write(key_buffer)
+
+        value_buffer = DataOutputBuffer()
+        value.write(value_buffer)
+
+        self.appendRaw(key_buffer.toByteArray(), value_buffer.toByteArray())
+
+    def appendRaw(self, key, value):
+        if self._block_compress:
+            def _compress(data):
+                self._codec.setInput(data)
+                return self._codec.compress()
+
+            if self._block:
+                records, keys_len, keys, values_len, values = self._block
+            else:
+                keys_len = DataOutputBuffer()
+                keys = DataOutputBuffer()
+                values_len = DataOutputBuffer()
+                values = DataOutputBuffer()
+                records = 0
+
+            writeVInt(keys_len, len(key))
+            keys.write(key)
+
+            writeVInt(values_len, len(value))
+            values.write(value)
+
+            records += 1
+
+            self._block = (records, keys_len, keys, values_len, values)
+
+            current_block_size = keys.getSize() + values.getSize()
+            if current_block_size >= self.COMPRESSION_BLOCK_SIZE:
+                self.sync()
+        else:
+            if self._compress:
+                self._codec.setInput(value)
+                value = self._codec.compress()
+
+            key_length = len(key)
+            value_length = len(value)
+
+            self._checkAndWriteSync()
+            self._stream.writeInt(key_length + value_length)
+            self._stream.writeInt(key_length)
+            self._stream.write(key)
+            self._stream.write(value)
+
+    def sync(self):
+        if self._last_sync != self._stream.getPos():
+            self._stream.writeInt(SYNC_ESCAPE)
+            self._stream.write(self._sync)
+            self._last_sync = self._stream.getPos()
+
+        if self._block_compress and self._block:
+            def _writeBuffer(data_buf):
+                self._codec.setInput(data_buf.toByteArray())
+                buf = self._codec.compress()
+                writeVInt(self._stream, len(buf))
+                self._stream.write(buf)
+
+            records, keys_len, keys, values_len, values = self._block
+
+            writeVInt(self._stream, records)
+
+            _writeBuffer(keys_len)
+            _writeBuffer(keys)
+
+            _writeBuffer(values_len)
+            _writeBuffer(values)
+
+            self._block = None
+
+    def _writeFileHeader(self):
+        self._stream.write(VERSION)
+        Text.writeString(self._stream, 'org.apache.hadoop.' + self.getKeyClassName())
+        Text.writeString(self._stream, 'org.apache.hadoop.' + self.getValueClassName())
+
+        self._stream.writeBoolean(self._compress)
+        self._stream.writeBoolean(self._block_compress)
+
+        if self._codec:
+            Text.writeString(self._stream, 'org.apache.hadoop.io.compress.DefaultCodec')
+
+        self._metadata.write(self._stream)
+        self._stream.write(self._sync)
+
+    def _checkAndWriteSync(self):
+        if self._stream.getPos() >= (self._last_sync + SYNC_INTERVAL):
+            self.sync()
+    
 class Reader(object):
     def __init__(self, path, start=0, length=0):
         self._block_compressed = False
@@ -81,13 +264,13 @@ class Reader(object):
         return self._key_class
 
     def getKeyClassName(self):
-        return self._key_class.__name__
+        return '%s.%s' % (self._key_class.__module__, self._key_class.__name__)
 
     def getValueClass(self):
         return self._value_class
 
     def getValueClassName(self):
-        return self._value_class.__name__
+        return '%s.%s' % (self._value_class.__module__, self._value_class.__name__)
 
     def getPosition(self):
         return self._stream.getPos()
@@ -135,9 +318,7 @@ class Reader(object):
             def _readBuffer():
                 length = readVInt(self._stream)
                 buf = self._stream.read(length)
-
                 self._codec.setInput(buf)
-                print len(buf), len(self._codec.decompress())
                 return self._codec.inputStream()
 
             records = readVInt(self._stream)
@@ -223,7 +404,7 @@ class Reader(object):
             self._key_class = hadoopClassFromName(key_class_name)
             self._value_class = hadoopClassFromName(value_class_name)
 
-        if self._version > 2:
+        if ord(self._version) > 2:
             self._decompress = self._stream.readBoolean()
         else:
             self._decompress = False

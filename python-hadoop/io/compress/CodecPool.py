@@ -12,8 +12,8 @@ class CodecPool(object):
         shared_instance._decompressors = { None: ZlibDecompressor,
                                            'org.apache.hadoop.io.compress.DefaultCodec': ZlibDecompressor,
                                           }
-        shared_instance._compressors = { None: ZlibDecompressor,
-                                        'org.apache.hadoop.io.compress.DefaultCodec': ZlibDecompressor,
+        shared_instance._compressors = { None: ZlibCompressor,
+                                        'org.apache.hadoop.io.compress.DefaultCodec': ZlibCompressor,
                                        }
         return shared_instance
 

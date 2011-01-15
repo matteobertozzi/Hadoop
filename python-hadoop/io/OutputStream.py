@@ -9,19 +9,41 @@ class OutputStream(object):
     def flush(self):
         raise NotImplementedError
 
-    def write(self, bytes, offset, length):
-        return self.writeFully(bytes[offset:offset+length])
-
     def writeByte(self, byte):
         return self.writeFully(str(byte))
 
-    def writeFully(self, bytes):
+    def write(self, data):
         raise NotImplementedError
+
+class FileOutputStream(OutputStream):
+    def __init__(self, path):
+        self._fd = open(path, 'wb')
+
+    def close(self):
+        self._fd.close()
+
+    def seek(self, offset):
+        self._fd.seek(offset)
+
+    def flush(self):
+        return self._fd.flush()
+
+    def getPos(self):
+        return self._fd.tell()
+
+    def writeByte(self, value):
+        return self._fd.write(value)
+    
+    def write(self, value):
+        return self._fd.write(value)
 
 class DataOutputStream(object):
     def __init__(self, output_stream):
         assert isinstance(output_stream, OutputStream)
         self._stream = output_stream
+
+    def close(self):
+        return self._stream.close()
 
     def seek(self, offset):
         return self._stream.seek(offset)
@@ -33,30 +55,32 @@ class DataOutputStream(object):
         return self._stream.write(length)
 
     def writeByte(self, value):
-        return self._stream.writeByte()
+        data = struct.pack(">b", value)
+        assert len(data) == 1
+        return self._stream.write(data)
 
     def writeBoolean(self, value):
-        data = struct.unpack(">?", value)
+        data = struct.pack(">?", value)
         assert len(data) == 1
         return self._stream.write(data)
 
     def writeInt(self, value):
-        data = struct.unpack(">i", value)
+        data = struct.pack(">i", value)
         assert len(data) == 4
         return self._stream.write(data)
 
     def writeLong(self, value):
-        data = struct.unpack(">q", value)
+        data = struct.pack(">q", value)
         assert len(data) == 8
         return self._stream.write(data)
 
     def writeFloat(self, value):
-        data = struct.unpack(">f", value)
+        data = struct.pack(">f", value)
         assert len(data) == 4
         return self._stream.write(data)
 
     def writeDouble(self, value):
-        data = struct.unpack(">d", value)
+        data = struct.pack(">d", value)
         assert len(data) == 8
         return self._stream.write(data)
 
@@ -84,13 +108,13 @@ class ByteArrayOutputStream(OutputStream):
     def flush(self):
         pass
 
-    def writeFully(self, bytes):
+    def write(self, bytes):
         self._buffer.append(bytes)
         self._count += len(bytes)
 
 class DataOutputBuffer(DataOutputStream):
     def __init__(self):
-        super(DataOutputStream, self).__init__(ByteArrayOutputStream())
+        super(DataOutputBuffer, self).__init__(ByteArrayOutputStream())
 
     def getData(self):
         return self._stream.toByteArray()
@@ -103,4 +127,7 @@ class DataOutputBuffer(DataOutputStream):
 
     def writeStreamData(self, input_stream, length):
         self._stream.write(input_stream.read(length))
+
+    def toByteArray(self):
+        return self._stream.toByteArray()
 

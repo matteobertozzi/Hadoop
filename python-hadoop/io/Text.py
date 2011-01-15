@@ -31,6 +31,16 @@ class Text(WritableComparable):
         return Text.decode(bytes)
 
     @staticmethod
-    def decode(bytes):
+    def writeString(data_output, bytes):
+        bytes = Text.encode(bytes)
+        writeVInt(data_output, len(bytes))
+        data_output.write(bytes)
+
+    @staticmethod
+    def encode(bytes):
         return bytes
 
+    @staticmethod
+    def decode(bytes):
+        return bytes
+    
