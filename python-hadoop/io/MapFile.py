@@ -87,7 +87,7 @@ class Reader(object):
         count = len(self._keys)
         if count == 0:
             return None
-        return keys[(count - 1) >> 1]
+        return self._keys[(count - 1) >> 1]
 
     def finalKey(self, key):
         original_position = self._data.getPosition()

@@ -32,6 +32,9 @@ if __name__ == '__main__':
     while reader.next(key, value):
         print key, value
 
+    print 'MID KEY', reader.midKey()
+    print 'FINAL KEY', reader.finalKey(key), key
+
     print 'GET CLOSEST'
     key.set(8)
     print reader.get(key, value)
