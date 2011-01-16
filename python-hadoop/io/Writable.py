@@ -7,18 +7,26 @@ class Writable(object):
     def readFields(self, data_input):
         raise NotImplementedError
 
+    def toString(self):
+        return str(type(self))
+
+    def __repr__(self):
+        return self.toString()
+
 class WritableComparable(Writable):
     def compareTo(self, other):
         raise NotImplementedError
 
 class AbstractValueWritable(WritableComparable):
     def __init__(self, value=None):
+        assert not isinstance(value, type(self)), (type(self._value))
         self._value = value
 
     def set(self, value):
+        assert not isinstance(self._value, type(self)), (type(self._value))
         self._value = value
 
-    def get(self, value):
+    def get(self):
         return self._value
 
     def equal(self, other):
@@ -27,7 +35,7 @@ class AbstractValueWritable(WritableComparable):
         return self._value == other._value
 
     def compareTo(self, other):
-        assert isinstance(other, type(self))
+        assert isinstance(other, type(self)), (type(self), type(other))
         a = self._value
         b = other._value
         if a < b:
@@ -40,5 +48,6 @@ class AbstractValueWritable(WritableComparable):
         return int(self._value)
 
     def toString(self):
+        assert not isinstance(self._value, type(self)), (type(self._value))
         return str(self._value)
 

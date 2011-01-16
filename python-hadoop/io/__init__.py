@@ -4,6 +4,7 @@ from OutputStream import *
 from InputStream import *
 
 from SequenceFile import *
+from ArrayFile import *
 from MapFile import *
 from SetFile import *
 
