@@ -16,39 +16,26 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from io.IntWritable import IntWritable
-from io import SetFile
+from hadoop.io import *
 
-if __name__ == '__main__':
-    writer = SetFile.Writer('set-test', IntWritable)
-    writer.INDEX_INTERVAL = 16
-    for i in xrange(0, 100, 2):
-        writer.append(IntWritable(i * 10))
-    writer.close()
+def hadoopClassFromName(class_path):
+    if class_path.startswith('org.apache.hadoop.'):
+        class_path = class_path[11:]
+    return classFromName(class_path)
 
-    key = IntWritable()
-    reader = SetFile.Reader('set-test')
-    while reader.next(key):
-        print key
+def hadoopClassName(class_type):
+    module_name = class_type.__module__
+    class_name = class_type.__name__
+    if module_name.startswith('hadoop.io.'):
+        module_name, _, file_name = module_name.rpartition('.')
+        return 'org.apache.%s.%s' % (module_name, class_name)
+    return '%s.%s' % (module_name, class_name)
 
-    print 'GET 8'
-    key.set(8)
-    print reader.get(key)
-    print
+def classFromName(class_path):
+    module_name, _, class_name = class_path.rpartition('.')
+    if not module_name:
+        raise ValueError('Class name must contain module part.')
 
-    print 'GET 120'
-    key.set(120)
-    print reader.get(key)
-    print
+    module = __import__(module_name, globals(), locals(), [class_name], -1)
+    return getattr(module, class_name)
 
-    print 'GET 240'
-    key.set(240)
-    print reader.get(key)
-    print
-
-    print 'GET 550'
-    key.set(550)
-    print reader.get(key)
-    print
-
-    reader.close()

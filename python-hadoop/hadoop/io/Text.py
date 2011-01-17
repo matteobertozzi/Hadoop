@@ -59,4 +59,4 @@ class Text(WritableComparable):
     @staticmethod
     def decode(bytes):
         return bytes
-    
+

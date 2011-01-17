@@ -16,20 +16,39 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from OutputStream import *
-from InputStream import *
+from hadoop.io.IntWritable import LongWritable, IntWritable
+from hadoop.io import ArrayFile
 
-from SequenceFile import *
-from ArrayFile import *
-from MapFile import *
-from SetFile import *
+if __name__ == '__main__':
+    writer = ArrayFile.Writer('array-test', IntWritable)
+    writer.INDEX_INTERVAL = 16
+    for i in xrange(0, 100):
+        writer.append(IntWritable(1 + i * 10))
+    writer.close()
 
-from Writable import *
-from IntWritable import *
-from Text import *
-from WritableUtils import *
+    key = LongWritable()
+    value = IntWritable()
+    reader = ArrayFile.Reader('array-test')
+    while reader.next(key, value):
+        print key, value
 
-from InputStream import *
-from OutputStream import *
+    print 'GET 8'
+    print reader.get(8, value)
+    print value
+    print
 
-from compress import *
+    print 'GET 110'
+    print reader.get(110, value)
+    print
+
+    print 'GET 25'
+    print reader.get(25, value)
+    print value
+    print
+
+    print 'GET 55'
+    print reader.get(55, value)
+    print value
+    print
+
+    reader.close()

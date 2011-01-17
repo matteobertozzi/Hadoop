@@ -16,19 +16,20 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import zlib
+import OutputStream
+import InputStream
 
-from io.InputStream import DataInputBuffer
+import SequenceFile
+import ArrayFile
+import MapFile
+import SetFile
 
-class ZlibCodec:
-    def compress(self, data):
-        return zlib.compress(data)
+from Writable import *
+from IntWritable import *
+from Text import *
+import WritableUtils
 
-    def decompress(self, data):
-        return zlib.decompress(data)
+import InputStream
+import OutputStream
 
-    def decompressInputStream(self, data):
-        return DataInputBuffer(zlib.decompress(data))
-
-DefaultCodec = ZlibCodec
-
+import compress

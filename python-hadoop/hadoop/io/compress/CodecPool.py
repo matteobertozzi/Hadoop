@@ -16,28 +16,26 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import sys
+from hadoop.util import ReflectionUtils
 
-from io import SequenceFile
+from BZip2Codec import *
+from ZlibCodec import *
 
-if __name__ == '__main__':
-    if len(sys.argv) < 2:
-        print 'usage: SequenceFileReader <filename>'
-    else:
-        reader = SequenceFile.Reader(sys.argv[1])
+class CodecPool(object):
+    def __new__(cls, *p, **k):
+        if not '_shared_instance' in cls.__dict__:
+            cls._shared_instance = object.__new__(cls)
+        return cls._shared_instance
 
-        key_class = reader.getKeyClass()
-        value_class = reader.getValueClass()
+    def getDecompressor(self, class_path=None):
+        if not class_path:
+            return DefaultCodec()
+        codec_class = ReflectionUtils.hadoopClassFromName(class_path)
+        return codec_class()
 
-        key = key_class()
-        value = value_class()
-
-        #reader.sync(4042)
-        position = reader.getPosition()
-        while reader.next(key, value):
-            print '*' if reader.syncSeen() else ' ',
-            print '[%6s] %6s %6s' % (position, key.toString(), value.toString())
-            position = reader.getPosition()
-
-        reader.close()
+    def getCompressor(self, class_path=None):
+        if not class_path:
+            return DefaultCodec()
+        codec_class = ReflectionUtils.hadoopClassFromName(class_path)
+        return codec_class()
 

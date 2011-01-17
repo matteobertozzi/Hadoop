@@ -21,7 +21,7 @@ from uuid import uuid1
 from time import time
 import os
 
-from util.ReflectionUtils import hadoopClassFromName
+from hadoop.util.ReflectionUtils import hadoopClassFromName, hadoopClassName
 
 from compress import CodecPool
 
@@ -143,13 +143,13 @@ class Writer(object):
         return self._key_class
 
     def getKeyClassName(self):
-        return '%s.%s' % (self._key_class.__module__, self._key_class.__name__)
+        return hadoopClassName(self._key_class)
 
     def getValueClass(self):
         return self._value_class
 
     def getValueClassName(self):
-        return '%s.%s' % (self._value_class.__module__, self._value_class.__name__)
+        return hadoopClassName(self._value_class)
 
     def isBlockCompressed(self):
         return self._block_compress
@@ -159,7 +159,7 @@ class Writer(object):
 
     def getLength(self):
         return self._stream.getPos()
-    
+
     def append(self, key, value):
         if type(key) != self._key_class:
             raise IOError("Wrong key class %s is not %s" % (type(key), self._key_class))
@@ -238,8 +238,8 @@ class Writer(object):
 
     def _writeFileHeader(self):
         self._stream.write(VERSION)
-        Text.writeString(self._stream, 'org.apache.hadoop.' + self.getKeyClassName())
-        Text.writeString(self._stream, 'org.apache.hadoop.' + self.getValueClassName())
+        Text.writeString(self._stream, self.getKeyClassName())
+        Text.writeString(self._stream, self.getValueClassName())
 
         self._stream.writeBoolean(self._compress)
         self._stream.writeBoolean(self._block_compress)
@@ -253,7 +253,7 @@ class Writer(object):
     def _checkAndWriteSync(self):
         if self._stream.getPos() >= (self._last_sync + SYNC_INTERVAL):
             self.sync()
-    
+
 class Reader(object):
     def __init__(self, path, start=0, length=0):
         self._block_compressed = False
@@ -280,13 +280,13 @@ class Reader(object):
         return self._key_class
 
     def getKeyClassName(self):
-        return '%s.%s' % (self._key_class.__module__, self._key_class.__name__)
+        return hadoopClassName(self._key_class)
 
     def getValueClass(self):
         return self._value_class
 
     def getValueClassName(self):
-        return '%s.%s' % (self._value_class.__module__, self._value_class.__name__)
+        return hadoopClassName(self._value_class)
 
     def getPosition(self):
         return self._stream.getPos()

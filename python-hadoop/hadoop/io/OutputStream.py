@@ -49,7 +49,7 @@ class FileOutputStream(OutputStream):
 
     def writeByte(self, value):
         return self._fd.write(value)
-    
+
     def write(self, value):
         return self._fd.write(value)
 

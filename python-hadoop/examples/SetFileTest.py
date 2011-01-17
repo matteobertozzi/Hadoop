@@ -16,26 +16,39 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from util import ReflectionUtils
+from hadoop.io.IntWritable import IntWritable
+from hadoop.io import SetFile
 
-from BZip2Codec import *
-from ZlibCodec import *
+if __name__ == '__main__':
+    writer = SetFile.Writer('set-test', IntWritable)
+    writer.INDEX_INTERVAL = 16
+    for i in xrange(0, 100, 2):
+        writer.append(IntWritable(i * 10))
+    writer.close()
 
-class CodecPool(object):
-    def __new__(cls, *p, **k):
-        if not '_shared_instance' in cls.__dict__:
-            cls._shared_instance = object.__new__(cls)
-        return cls._shared_instance
+    key = IntWritable()
+    reader = SetFile.Reader('set-test')
+    while reader.next(key):
+        print key
 
-    def getDecompressor(self, class_path=None):
-        if not class_path:
-            return DefaultCodec()
-        codec_class = ReflectionUtils.hadoopClassFromName(class_path)
-        return codec_class()
+    print 'GET 8'
+    key.set(8)
+    print reader.get(key)
+    print
 
-    def getCompressor(self, class_path=None):
-        if not class_path:
-            return DefaultCodec()
-        codec_class = ReflectionUtils.hadoopClassFromName(class_path)
-        return codec_class()
+    print 'GET 120'
+    key.set(120)
+    print reader.get(key)
+    print
 
+    print 'GET 240'
+    key.set(240)
+    print reader.get(key)
+    print
+
+    print 'GET 550'
+    key.set(550)
+    print reader.get(key)
+    print
+
+    reader.close()

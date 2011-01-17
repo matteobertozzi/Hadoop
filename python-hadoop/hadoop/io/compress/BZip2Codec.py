@@ -18,7 +18,7 @@
 
 import bz2
 
-from io.InputStream import DataInputBuffer
+from hadoop.io.InputStream import DataInputBuffer
 
 class BZip2Codec:
     def compress(self, data):

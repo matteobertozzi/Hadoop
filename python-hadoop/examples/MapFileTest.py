@@ -16,38 +16,45 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from io.IntWritable import LongWritable, IntWritable
-from io import ArrayFile
+from hadoop.io.IntWritable import LongWritable
+from hadoop.io import MapFile
 
 if __name__ == '__main__':
-    writer = ArrayFile.Writer('array-test', IntWritable)
-    writer.INDEX_INTERVAL = 16
-    for i in xrange(0, 100):
-        writer.append(IntWritable(1 + i * 10))
+    writer = MapFile.Writer('map-test', LongWritable, LongWritable)
+    writer.INDEX_INTERVAL = 2
+    for i in xrange(0, 100, 2):
+        writer.append(LongWritable(i), LongWritable(i * 10))
     writer.close()
 
     key = LongWritable()
-    value = IntWritable()
-    reader = ArrayFile.Reader('array-test')
+    value = LongWritable()
+    reader = MapFile.Reader('map-test')
     while reader.next(key, value):
         print key, value
 
-    print 'GET 8'
-    print reader.get(8, value)
+    print 'MID KEY', reader.midKey()
+    print 'FINAL KEY', reader.finalKey(key), key
+
+    print 'GET CLOSEST'
+    key.set(8)
+    print reader.get(key, value)
     print value
     print
 
-    print 'GET 110'
-    print reader.get(110, value)
+    print 'GET 111'
+    key.set(111)
+    print reader.get(key, value)
     print
 
-    print 'GET 25'
-    print reader.get(25, value)
+    key.set(25)
+    print 'SEEK 25 before'
+    print reader.getClosest(key, value, before=True)
     print value
     print
 
-    print 'GET 55'
-    print reader.get(55, value)
+    key.set(55)
+    print 'SEEK 55'
+    print reader.getClosest(key, value)
     print value
     print
 

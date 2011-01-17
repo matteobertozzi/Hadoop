@@ -16,18 +16,30 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-def hadoopClassFromName(class_path):
-    if class_path.startswith('org.apache.hadoop.'):
-        class_path = class_path[18:]
-    return classFromName(class_path)
+from hadoop.io.SequenceFile import CompressionType
+from hadoop.io import LongWritable
+from hadoop.io import SequenceFile
 
-def classFromName(class_path):
-    module_name, _, class_name = class_path.rpartition('.')
-    if not module_name:
-        raise ValueError('Class name must contain module part.')
+def writeData(writer):
+    key = LongWritable()
+    value = LongWritable()
 
-    module = __import__(module_name, globals(), locals(), [class_name], -1)
-    return getattr(module, class_name)
+    for i in xrange(1000):
+        key.set(1000 - i)
+        value.set(i)
+        print '[%d] %s %s' % (writer.getLength(), key.toString(), value.toString())
+        writer.append(key, value)
 
 if __name__ == '__main__':
-    print classFromName('io.SequenceFile')
+    writer = SequenceFile.createWriter('test.seq', LongWritable, LongWritable)
+    writeData(writer)
+    writer.close()
+
+    writer = SequenceFile.createWriter('test-record.seq', LongWritable, LongWritable, compression_type=CompressionType.RECORD)
+    writeData(writer)
+    writer.close()
+
+    writer = SequenceFile.createWriter('test-block.seq', LongWritable, LongWritable, compression_type=CompressionType.BLOCK)
+    writeData(writer)
+    writer.close()
+

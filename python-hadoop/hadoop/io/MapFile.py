@@ -19,7 +19,7 @@
 import os
 
 from IntWritable import LongWritable
-import SequenceFile 
+import SequenceFile
 
 INDEX_FILE_NAME = 'index'
 DATA_FILE_NAME = 'data'
@@ -165,7 +165,7 @@ class Reader(object):
 
         key_class = self._data.getKeyClass()
         self._next_key = key_class()
-        
+
         self._data.seek(seek_position)
         while self._data.nextKey(self._next_key):
             cmp = key.compareTo(self._next_key)
