@@ -29,7 +29,4 @@ from IntWritable import *
 from Text import *
 import WritableUtils
 
-import InputStream
-import OutputStream
-
 import compress
