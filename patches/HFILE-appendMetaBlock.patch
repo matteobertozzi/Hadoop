@@ -1,0 +1,77 @@
+Index: src/main/java/org/apache/hadoop/hbase/io/hfile/HFile.java
+===================================================================
+--- src/main/java/org/apache/hadoop/hbase/io/hfile/HFile.java	(revision 1067406)
++++ src/main/java/org/apache/hadoop/hbase/io/hfile/HFile.java	(working copy)
+@@ -463,15 +463,10 @@
+      */
+     public void appendMetaBlock(String metaBlockName, Writable content) {
+       byte[] key = Bytes.toBytes(metaBlockName);
+-      int i;
+-      for (i = 0; i < metaNames.size(); ++i) {
+-        // stop when the current key is greater than our own
+-        byte[] cur = metaNames.get(i);
+-        if (Bytes.BYTES_RAWCOMPARATOR.compare(cur, 0, cur.length, 
+-            key, 0, key.length) > 0) {
+-          break;
+-        }
+-      }
++      int i = Bytes.binarySearch(metaNames, key, 0, key.length, Bytes.BYTES_RAWCOMPARATOR);
++      if (i < 0)
++        i = -(i + 1);   
++ 
+       metaNames.add(i, key);
+       metaData.add(i, content);
+     }
+Index: src/main/java/org/apache/hadoop/hbase/util/Bytes.java
+===================================================================
+--- src/main/java/org/apache/hadoop/hbase/util/Bytes.java	(revision 1067406)
++++ src/main/java/org/apache/hadoop/hbase/util/Bytes.java	(working copy)
+@@ -35,6 +35,7 @@
+ import java.nio.ByteBuffer;
+ import java.util.Comparator;
+ import java.util.Iterator;
++import java.util.List;
+ 
+ /**
+  * Utility class that handles byte arrays, conversions to/from other types,
+@@ -1172,6 +1173,40 @@
+   }
+ 
+   /**
++   * Binary search for keys in indexes.
++   * @param list list of byte arrays to search for
++   * @param key the key you want to find
++   * @param offset the offset in the key you want to find
++   * @param length the length of the key
++   * @param comparator a comparator to compare.
++   * @return index of key
++   */
++  public static int binarySearch(List<byte[]> list, byte []key, int offset,
++      int length, RawComparator<byte []> comparator) {
++    int low = 0;
++    int high = list.size() - 1;
++
++    while (low <= high) {
++      int mid = (low+high) >>> 1;
++      // we have to compare in this order, because the comparator order
++      // has special logic when the 'left side' is a special key.
++      byte[] curr = list.get(mid);
++      int cmp = comparator.compare(key, offset, length,
++          curr, 0, curr.length);
++      // key lives above the midpoint
++      if (cmp > 0)
++        low = mid + 1;
++      // key lives below the midpoint
++      else if (cmp < 0)
++        high = mid - 1;
++      // BAM. how often does this really happen?
++      else
++        return mid;
++    }
++    return - (low+1);
++  }
++
++  /**
+    * Bytewise binary increment/deincrement of long contained in byte array
+    * on given amount.
+    *

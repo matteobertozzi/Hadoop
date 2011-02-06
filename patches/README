@@ -1,0 +1,5 @@
+Hadoop Patches
+------------------------------------------------------------------------------
+HFILE-remove-double-write.patch - Remove double write, if cache, and speedup write.
+HFILE-appendMetaBlock.patch - Replace sequential search with binary search.
+
