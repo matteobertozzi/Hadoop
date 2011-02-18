@@ -1,0 +1,26 @@
+{
+  "type" : "record",
+  "name" : "recordName",
+  "namespace" : "recordNS",
+  "fields" : [ {
+    "name" : "field1",
+    "type" : "string"
+  }, {
+    "name" : "field2",
+    "type" : "long"
+  }, {
+    "name" : "field3",
+    "type" : {
+      "type" : "array",
+      "items" : "string"
+    }
+  }, {
+    "name" : "field4",
+    "type" : {
+      "type" : "map",
+      "values" : "int"
+    }
+  } ],
+  "Property2" : "Value2",
+  "Property1" : "Value1"
+}

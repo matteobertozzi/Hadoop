@@ -1,0 +1,22 @@
+{
+    "namespace": "test.proto",
+    "protocol": "Test",
+
+    "types": [
+        {
+            "name": "Message",
+            "type": "record",
+            "fields": [
+                {"name": "data", "type": "string"}
+            ]
+        }
+    ],
+
+    "messages": {
+        "xyz": {
+            "request": [{"name": "message", "type": "Message"}],
+            "response": "string"
+        }
+    }
+}
+

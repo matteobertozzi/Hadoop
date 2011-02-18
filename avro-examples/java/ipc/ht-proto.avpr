@@ -1,0 +1,25 @@
+{
+    "namespace": "ht.proto",
+    "protocol": "HT",
+
+    "types": [],
+
+    "messages": {
+        "get": {
+            "request": [{"name": "key", "type": "string"}],
+            "response": ["bytes", "null"]
+        },
+        "put": {
+            "request": [
+                {"name": "key", "type": "string"},
+                {"name": "value", "type": "bytes"}
+            ],
+            "response": "null"
+        },
+        "delete": {
+            "request": [{"name": "key", "type": "string"}],
+            "response": "null"
+        }
+    }
+}
+

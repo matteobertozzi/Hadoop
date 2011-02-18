@@ -1,0 +1,11 @@
+{
+  "type": "record",
+  "name": "FSObject",
+
+  "fields": [
+    { "name": "path", "type": "string" },
+    { "name": "size", "type": "long", "default": 0, "aliases": ["length"] },
+    { "name": "attributes", "type": {"type": "map", "values": "string"}, "default": {} }
+  ]
+}
+
