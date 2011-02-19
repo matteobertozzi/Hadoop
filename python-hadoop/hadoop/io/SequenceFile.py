@@ -61,11 +61,29 @@ class Metadata(Writable):
     def set(self, name, value):
         self._meta[name] = value
 
+    def keys(self):
+        return self._meta.keys()
+
+    def iterkeys(self):
+        return self._meta.iterkeys()
+
+    def values(self):
+        return self._meta.values()
+
+    def itervalues(self):
+        return self._meta.itervalues()
+
+    def iteritems(self):
+        return self._meta.iteritems()
+
+    def __iter__(self):
+        return self._meta.iteritems()
+
     def write(self, data_output):
         data_output.writeInt(len(self._meta))
         for key, value in self._meta.iteritems():
-            key.write(data_output)
-            value.write(data_output)
+            Text.writeString(data_output, key)
+            Text.writeString(data_output, value)
 
     def readFields(self, data_input):
         count = data_input.readInt()
@@ -73,10 +91,8 @@ class Metadata(Writable):
             raise IOError("Invalid size: %d for file metadata object" % count)
 
         for i in xrange(count):
-            key = Text()
-            value = Text()
-            key.readFields(data_input)
-            value.readFields(data_input)
+            key = Text.readString(data_input)
+            value = Text.readString(data_input)
             self._meta[key] = value
 
 def createWriter(path, key_class, value_class, metadata=None, compression_type=CompressionType.NONE):
