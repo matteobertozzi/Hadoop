@@ -24,6 +24,25 @@ class Text(WritableComparable):
         self._bytes = ''
         self._length = 0
 
+    def getBytes(self):
+        return self._bytes
+
+    def getLength(self):
+        return self._length
+
+    def set(self, value):
+        self._bytes = Text.encode(value)
+        self._length = len(self._bytes)
+
+    def append(self, value):
+        new_bytes = Text.encode(value)
+        self._bytes += new_bytes
+        self._length += len(new_bytes)
+
+    def clear(self):
+        self._length = 0
+        self._bytes = ''
+
     def write(self, data_output):
         writeVInt(data_output, self._length)
         data_output.write(self._bytes, 0, self._length)
