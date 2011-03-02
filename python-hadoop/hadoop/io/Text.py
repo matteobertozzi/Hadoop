@@ -45,7 +45,7 @@ class Text(WritableComparable):
 
     def write(self, data_output):
         writeVInt(data_output, self._length)
-        data_output.write(self._bytes, 0, self._length)
+        data_output.write(self._bytes)
 
     def readFields(self, data_input):
         self._length = readVInt(data_input)
