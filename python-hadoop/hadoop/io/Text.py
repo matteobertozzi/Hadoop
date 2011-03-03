@@ -73,9 +73,9 @@ class Text(WritableComparable):
 
     @staticmethod
     def encode(bytes):
-        return bytes
+        return bytes.encode('utf-8')
 
     @staticmethod
     def decode(bytes):
-        return bytes
+        return bytes.decode('utf-8')
 
