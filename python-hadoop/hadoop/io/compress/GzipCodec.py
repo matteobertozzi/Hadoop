@@ -16,27 +16,25 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from hadoop.util import ReflectionUtils
+import gzip
 
-from BZip2Codec import *
-from ZlibCodec import *
-from GzipCodec import *
+from hadoop.io.InputStream import DataInputBuffer
+import StringIO
 
-class CodecPool(object):
-    def __new__(cls, *p, **k):
-        if not '_shared_instance' in cls.__dict__:
-            cls._shared_instance = object.__new__(cls)
-        return cls._shared_instance
+class GzipCodec:
+    def compress(self, data):
+        ioObj = StringIO.StringIO()
+        f = gzip.GzipFile(fileobj = ioObj, mode='wb')
+        f.write(data)
+        f.close()
+        return ioObj.getValue()
 
-    def getDecompressor(self, class_path=None):
-        if not class_path:
-            return DefaultCodec()
-        codec_class = ReflectionUtils.hadoopClassFromName(class_path)
-        return codec_class()
+    def decompress(self, data):
+        ioObj = StringIO.StringIO(data)
+        f = gzip.GzipFile(fileobj = ioObj, mode='rb')
+        d = f.read()
+        f.close()
+        return d
 
-    def getCompressor(self, class_path=None):
-        if not class_path:
-            return DefaultCodec()
-        codec_class = ReflectionUtils.hadoopClassFromName(class_path)
-        return codec_class()
-
+    def decompressInputStream(self, data):
+        return DataInputBuffer(self.decompress(data))
