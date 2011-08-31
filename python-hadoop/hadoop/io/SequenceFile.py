@@ -293,16 +293,20 @@ class Reader(object):
         return self._codec
 
     def getKeyClass(self):
+        if not self._key_class:
+          self._key_class = hadoopClassFromName(self._key_class_name)
         return self._key_class
 
     def getKeyClassName(self):
-        return hadoopClassName(self._key_class)
+        return hadoopClassName(self.getKeyClass())
 
     def getValueClass(self):
+        if not self._value_class:
+          self._value_class = hadoopClassFromName(self._value_class_name)
         return self._value_class
 
     def getValueClassName(self):
-        return hadoopClassName(self._value_class)
+        return hadoopClassName(self.getValueClass())
 
     def getPosition(self):
         return self._stream.getPos()
@@ -316,29 +320,27 @@ class Reader(object):
     def isCompressed(self):
         return self._decompress
 
-    def nextKey(self, key):
+    def nextRawKey(self):
         if not self._block_compressed:
             record_length = self._readRecordLength()
             if record_length < 0:
-                return False
+                return None
 
-            record_data = self._stream.read(record_length + 4)
-            self._record.reset(record_data)
-
-            self._record.readInt() # read key_length
-            key.readFields(self._record)
+            key_length = self._stream.readInt()
+            key = DataInputBuffer(self._stream.read(key_length))
+            self._record.reset(self._stream.read(record_length - key_length))
+            return key
         else:
             if hasattr(self, '_block_index') and \
                self._block_index < self._record[0]:
                 self._sync_seen = False
                 records, keys_len, keys, values_len, values = self._record
-                readVInt(keys_len)
-                key.readFields(keys)
+                key_length = readVInt(keys_len)
                 self._block_index += 1
-                return True
+                return DataInputBuffer(keys.read(key_length))
 
             if self._stream.getPos() >= self._end:
-                return False
+                return None
 
             # Read Sync
             self._stream.readInt() # -1
@@ -362,10 +364,27 @@ class Reader(object):
             self._record = (records, keys_len, keys, values_len, values)
             self._block_index = 1
 
-            readVInt(keys_len)
-            key.readFields(keys)
+            key_length = readVInt(keys_len)
+            return DataInputBuffer(keys.read(key_length))
 
+    def nextKey(self, key):
+        record, keyLen = self.nextRawKey()
+        if not record:
+          return False
+        key.readFields(record)
         return True
+
+    def nextRawValue(self):
+        if not self._block_compressed:
+            if self._decompress:
+                compress_data = self._record.read(self._record.size())
+                return self._codec.decompressInputStream(compress_data)
+            else:
+                return self._record
+        else:
+            records, keys_len, keys, values_len, values = self._record
+            value_length = readVInt(values_len)
+            return DataInputBuffer(values.read(value_length))
 
     def next(self, key, value):
         more = self.nextKey(key)
@@ -430,10 +449,8 @@ class Reader(object):
             # Same as below, but with UTF8 Deprecated Class
             raise NotImplementedError
         else:
-            key_class_name = Text.readString(self._stream)
-            value_class_name = Text.readString(self._stream)
-            self._key_class = hadoopClassFromName(key_class_name)
-            self._value_class = hadoopClassFromName(value_class_name)
+            self._key_class_name = Text.readString(self._stream)
+            self._value_class_name = Text.readString(self._stream)
 
         if ord(self._version) > 2:
             self._decompress = self._stream.readBoolean()
@@ -482,13 +499,7 @@ class Reader(object):
         return length
 
     def _getCurrentValue(self, value):
+        stream = nextRawValue()
+        value.readFields(stream)
         if not self._block_compressed:
-            if self._decompress:
-                compress_data = self._record.read(self._record.size())
-                value.readFields(self._codec.decompressInputStream(compress_data))
-            else:
-                value.readFields(self._record)
             assert self._record.size() == 0
-        else:
-            records, keys_len, keys, values_len, values = self._record
-            value.readFields(values)
