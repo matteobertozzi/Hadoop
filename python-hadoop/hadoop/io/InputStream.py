@@ -52,7 +52,7 @@ class ByteArrayInputStream(InputStream):
         return self._count - self._offset
 
     def toByteArray(self):
-        return self._buffer[self._offset, self._offset+self._count]
+        return self._buffer[self._offset:self._offset+self._count]
 
     def reset(self, data, offset=0, length=0):
         if data and not length:
