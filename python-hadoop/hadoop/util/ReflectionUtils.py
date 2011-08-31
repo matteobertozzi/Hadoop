@@ -36,6 +36,6 @@ def classFromName(class_path):
     if not module_name:
         raise ValueError('Class name must contain module part.')
 
-    module = __import__(module_name, globals(), locals(), [class_name], -1)
+    module = __import__(module_name, globals(), locals(), [str(class_name)], -1)
     return getattr(module, class_name)
 
