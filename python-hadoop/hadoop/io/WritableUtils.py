@@ -27,12 +27,9 @@ def readVLong(data_input):
 
     i = 0
     for idx in xrange(length - 1):
-        b = data_input.readByte()
-        if b < 0:
-            b = -b | 0x80
-
+        b = data_input.readUByte()
         i = i << 8
-        i = i | (b & 0xFF)
+        i = i | b
 
     return (i ^ -1) if isNegativeVInt(first_byte) else i
 
@@ -61,7 +58,7 @@ def writeVLong(data_output, value):
         mask = 0xFF << shiftbits
 
         x = (value & mask) >> shiftbits
-        data_output.writeByte(-(x & 0x7f) if x & 0x80 else x)
+        data_output.writeUByte(x)
 
 def isNegativeVInt(value):
     return value < -120 or (value >= -112 and value < 0)
