@@ -368,10 +368,10 @@ class Reader(object):
             return DataInputBuffer(keys.read(key_length))
 
     def nextKey(self, key):
-        record, keyLen = self.nextRawKey()
-        if not record:
+        buf = self.nextRawKey()
+        if not buf:
           return False
-        key.readFields(record)
+        key.readFields(buf)
         return True
 
     def nextRawValue(self):
@@ -499,7 +499,7 @@ class Reader(object):
         return length
 
     def _getCurrentValue(self, value):
-        stream = nextRawValue()
+        stream = self.nextRawValue()
         value.readFields(stream)
         if not self._block_compressed:
             assert self._record.size() == 0
