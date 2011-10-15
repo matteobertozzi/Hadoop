@@ -11,7 +11,7 @@ HADOOP_HDFS_HOME="$(ls -d $HADOOP_SRC/hadoop-hdfs-project/hadoop-hdfs/target/had
 HADOOP_MAPRED_HOME="$(ls -d $HADOOP_SRC/hadoop-mapreduce-project/target/hadoop-mapreduce-*-SNAPSHOT)"
 
 cp $HADOOP_DEV_DIR/pseudo-conf/core-site.xml $HADOOP_COMMON_HOME/etc/hadoop/core-site.xml
-cp $HADOOP_DEV_DIR/pseudo-conf/yarn-site.xml $YARN_HOME/conf/yarn-site.xml
+cp $HADOOP_DEV_DIR/pseudo-conf/yarn-site.xml $HADOOP_MAPRED_HOME/conf/yarn-site.xml
 
 
 cd $HBASE_SRC
