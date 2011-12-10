@@ -6,13 +6,13 @@ HADOOP_SRC="/home/hadoop/hadoop-src/hadoop-trunk"
 cd $HADOOP_SRC
 mvn clean package -Pdist -Pnative -P-cbuild -DskipTests
 
-HADOOP_COMMON_HOME="$(ls -d $HADOOP_SRC/hadoop-common-project/hadoop-common/target/hadoop-common-*-SNAPSHOT)"
-HADOOP_HDFS_HOME="$(ls -d $HADOOP_SRC/hadoop-hdfs-project/hadoop-hdfs/target/hadoop-hdfs-*-SNAPSHOT)"
-HADOOP_MAPRED_HOME="$(ls -d $HADOOP_SRC/hadoop-mapreduce-project/target/hadoop-mapreduce-*-SNAPSHOT)"
+HADOOP_DIST="$(ls -d $HADOOP_SRC/hadoop-dist/target/hadoop-*-SNAPSHOT)"
+HADOOP_COMMON_HOME="$HADOOP_DIST"
+HADOOP_HDFS_HOME="$HADOOP_DIST"
+HADOOP_MAPRED_HOME="$HADOOP_DIST"
 
 cp $HADOOP_DEV_DIR/pseudo-conf/core-site.xml $HADOOP_COMMON_HOME/etc/hadoop/core-site.xml
 cp $HADOOP_DEV_DIR/pseudo-conf/yarn-site.xml $HADOOP_MAPRED_HOME/conf/yarn-site.xml
-
 
 cd $HBASE_SRC
 mvn -P-cbuild -DskipTests package
