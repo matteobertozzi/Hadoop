@@ -3,7 +3,11 @@
 <configuration>
     <property>
         <name>hbase.rootdir</name>
-        <value>file:///var/lib/hbase</value>
+        <value>file:///tmp/hbase</value>
         <!--<value>hdfs://localhost:9999/hbase</value>-->
+    </property>
+    <property>
+        <name>dfs.replication</name>
+        <value>1</value>
     </property>
 </configuration>
