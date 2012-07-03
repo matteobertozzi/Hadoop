@@ -24,8 +24,13 @@ def hadoopClassFromName(class_path):
     return classFromName(class_path)
 
 def hadoopClassName(class_type):
-    module_name = class_type.__module__
-    class_name = class_type.__name__
+    if hasattr(class_type, "hadoop_module_name") and \
+       hasattr(class_type, "hadoop_class_name"):
+        module_name = class_type.hadoop_module_name
+        class_name = class_type.hadoop_class_name
+    else:
+        module_name = class_type.__module__
+        class_name = class_type.__name__
     if module_name.startswith('hadoop.io.'):
         module_name, _, file_name = module_name.rpartition('.')
         return 'org.apache.%s.%s' % (module_name, class_name)
