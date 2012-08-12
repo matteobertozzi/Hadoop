@@ -1,0 +1,308 @@
+diff --git a/hbase-server/src/main/ruby/hbase/admin.rb b/hbase-server/src/main/ruby/hbase/admin.rb
+index 6239d52..1e9ad10 100644
+--- a/hbase-server/src/main/ruby/hbase/admin.rb
++++ b/hbase-server/src/main/ruby/hbase/admin.rb
+@@ -643,5 +643,43 @@ module Hbase
+       put.add(org.apache.hadoop.hbase.HConstants::CATALOG_FAMILY, org.apache.hadoop.hbase.HConstants::REGIONINFO_QUALIFIER, org.apache.hadoop.hbase.util.Writables.getBytes(hri))
+       meta.put(put)
+     end
++
++    #----------------------------------------------------------------------------------------------
++    # Take a snapshot of specified table
++    def snapshot(table, snapshot_name, snapshot_type=nil)
++      if snapshot_type == 'global':
++        @admin.globalSnapshot(snapshot_name.to_java_bytes, table.to_java_bytes)
++      else
++        @admin.snapshot(snapshot_name.to_java_bytes, table.to_java_bytes)
++      end
++    end
++
++    #----------------------------------------------------------------------------------------------
++    # Restore specified snapshot
++    def restore_snapshot(snapshot_name, table=nil)
++      if table != nil
++        @admin.restoreSnapshot(snapshot_name.to_java_bytes, table.to_java_bytes)
++      else
++        @admin.restoreSnapshot(snapshot_name.to_java_bytes)
++      end
++    end
++
++    #----------------------------------------------------------------------------------------------
++    # Delete specified snapshot
++    def rename_snapshot(old_snapshot_name, new_snapshot_name)
++      @admin.renameSnapshot(old_snapshot_name.to_java_bytes, new_snapshot_name.to_java_bytes)
++    end
++
++    #----------------------------------------------------------------------------------------------
++    # Delete specified snapshot
++    def delete_snapshot(snapshot_name)
++      @admin.deleteSnapshot(snapshot_name.to_java_bytes)
++    end
++
++    #----------------------------------------------------------------------------------------------
++    # Returns a list of snapshots
++    def list_snapshot
++      @admin.listSnapshots.map { |s| s.getSnapshotNameAsString }
++    end
+   end
+ end
+diff --git a/hbase-server/src/main/ruby/shell.rb b/hbase-server/src/main/ruby/shell.rb
+index d020969..820344b 100644
+--- a/hbase-server/src/main/ruby/shell.rb
++++ b/hbase-server/src/main/ruby/shell.rb
+@@ -309,6 +309,18 @@ Shell.load_command_group(
+ )
+ 
+ Shell.load_command_group(
++  'snapshot',
++  :full_name => 'CLUSTER SNAPSHOT TOOLS',
++  :commands => %w[
++    snapshot
++    restore_snapshot
++    rename_snapshot
++    delete_snapshot
++    list_snapshots
++  ]
++)
++
++Shell.load_command_group(
+   'security',
+   :full_name => 'SECURITY TOOLS',
+   :comment => "NOTE: Above commands are only applicable if running with the AccessController coprocessor",
+diff --git a/hbase-server/src/main/ruby/shell/commands/delete_snapshot.rb b/hbase-server/src/main/ruby/shell/commands/delete_snapshot.rb
+new file mode 100644
+index 0000000..acb7977
+--- /dev/null
++++ b/hbase-server/src/main/ruby/shell/commands/delete_snapshot.rb
+@@ -0,0 +1,39 @@
++#
++# Copyright 2010 The Apache Software Foundation
++#
++# Licensed to the Apache Software Foundation (ASF) under one
++# or more contributor license agreements.  See the NOTICE file
++# distributed with this work for additional information
++# regarding copyright ownership.  The ASF licenses this file
++# to you under the Apache License, Version 2.0 (the
++# "License"); you may not use this file except in compliance
++# with the License.  You may obtain a copy of the License at
++#
++#     http://www.apache.org/licenses/LICENSE-2.0
++#
++# Unless required by applicable law or agreed to in writing, software
++# distributed under the License is distributed on an "AS IS" BASIS,
++# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++# See the License for the specific language governing permissions and
++# limitations under the License.
++#
++
++module Shell
++  module Commands
++    class DeleteSnapshot < Command
++      def help
++        return <<-EOF
++Delete a specified snapshot. Examples:
++
++  hbase> delete_snapshot 'name',
++EOF
++      end
++
++      def command(snapshot_name)
++        format_simple_command do
++          admin.delete_snapshot(snapshot_name)
++        end
++      end
++    end
++  end
++end
+diff --git a/hbase-server/src/main/ruby/shell/commands/list_snapshots.rb b/hbase-server/src/main/ruby/shell/commands/list_snapshots.rb
+new file mode 100644
+index 0000000..9ab57f1
+--- /dev/null
++++ b/hbase-server/src/main/ruby/shell/commands/list_snapshots.rb
+@@ -0,0 +1,48 @@
++#
++# Copyright 2010 The Apache Software Foundation
++#
++# Licensed to the Apache Software Foundation (ASF) under one
++# or more contributor license agreements.  See the NOTICE file
++# distributed with this work for additional information
++# regarding copyright ownership.  The ASF licenses this file
++# to you under the Apache License, Version 2.0 (the
++# "License"); you may not use this file except in compliance
++# with the License.  You may obtain a copy of the License at
++#
++#     http://www.apache.org/licenses/LICENSE-2.0
++#
++# Unless required by applicable law or agreed to in writing, software
++# distributed under the License is distributed on an "AS IS" BASIS,
++# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++# See the License for the specific language governing permissions and
++# limitations under the License.
++#
++
++module Shell
++  module Commands
++    class ListSnapshots < Command
++      def help
++        return <<-EOF
++List all snapshots taken. Optional regular expression parameter could
++be used to filter the output. Examples:
++
++  hbase> list_snapshots
++  hbase> list_snapshots 'abc.*'
++EOF
++      end
++
++      def command(regex = ".*")
++        now = Time.now
++        formatter.header([ "SNAPSHOT" ])
++
++        regex = /#{regex}/ unless regex.is_a?(Regexp)
++        list = admin.list_snapshot.grep(regex)
++        list.each do |snapshot|
++          formatter.row([ snapshot ])
++        end
++
++        formatter.footer(now, list.size)
++      end
++    end
++  end
++end
+diff --git a/hbase-server/src/main/ruby/shell/commands/rename_snapshot.rb b/hbase-server/src/main/ruby/shell/commands/rename_snapshot.rb
+new file mode 100644
+index 0000000..a84d5f0
+--- /dev/null
++++ b/hbase-server/src/main/ruby/shell/commands/rename_snapshot.rb
+@@ -0,0 +1,39 @@
++#
++# Copyright 2010 The Apache Software Foundation
++#
++# Licensed to the Apache Software Foundation (ASF) under one
++# or more contributor license agreements.  See the NOTICE file
++# distributed with this work for additional information
++# regarding copyright ownership.  The ASF licenses this file
++# to you under the Apache License, Version 2.0 (the
++# "License"); you may not use this file except in compliance
++# with the License.  You may obtain a copy of the License at
++#
++#     http://www.apache.org/licenses/LICENSE-2.0
++#
++# Unless required by applicable law or agreed to in writing, software
++# distributed under the License is distributed on an "AS IS" BASIS,
++# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++# See the License for the specific language governing permissions and
++# limitations under the License.
++#
++
++module Shell
++  module Commands
++    class RenameSnapshot < Command
++      def help
++        return <<-EOF
++Rename a specified snapshot. Examples:
++
++  hbase> rename_snapshot 'old_snapshot_name' 'new_snapshot_name'
++EOF
++      end
++
++      def command(old_snapshot_name, new_snapshot_name)
++        format_simple_command do
++          admin.rename_snapshot(old_snapshot_name, new_snapshot_name)
++        end
++      end
++    end
++  end
++end
+diff --git a/hbase-server/src/main/ruby/shell/commands/restore_snapshot.rb b/hbase-server/src/main/ruby/shell/commands/restore_snapshot.rb
+new file mode 100644
+index 0000000..554e761
+--- /dev/null
++++ b/hbase-server/src/main/ruby/shell/commands/restore_snapshot.rb
+@@ -0,0 +1,40 @@
++#
++# Copyright 2010 The Apache Software Foundation
++#
++# Licensed to the Apache Software Foundation (ASF) under one
++# or more contributor license agreements.  See the NOTICE file
++# distributed with this work for additional information
++# regarding copyright ownership.  The ASF licenses this file
++# to you under the Apache License, Version 2.0 (the
++# "License"); you may not use this file except in compliance
++# with the License.  You may obtain a copy of the License at
++#
++#     http://www.apache.org/licenses/LICENSE-2.0
++#
++# Unless required by applicable law or agreed to in writing, software
++# distributed under the License is distributed on an "AS IS" BASIS,
++# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++# See the License for the specific language governing permissions and
++# limitations under the License.
++#
++
++module Shell
++  module Commands
++    class RestoreSnapshot < Command
++      def help
++        return <<-EOF
++Restore a specified snapshot. Examples:
++
++  hbase> restore_snapshot 'name'
++  hbase> restore_snapshot 'name', 'tableName'
++EOF
++      end
++
++      def command(snapshot_name, table=nil)
++        format_simple_command do
++          admin.restore_snapshot(snapshot_name, table)
++        end
++      end
++    end
++  end
++end
+diff --git a/hbase-server/src/main/ruby/shell/commands/snapshot.rb b/hbase-server/src/main/ruby/shell/commands/snapshot.rb
+new file mode 100644
+index 0000000..30a1504
+--- /dev/null
++++ b/hbase-server/src/main/ruby/shell/commands/snapshot.rb
+@@ -0,0 +1,41 @@
++#
++# Copyright 2010 The Apache Software Foundation
++#
++# Licensed to the Apache Software Foundation (ASF) under one
++# or more contributor license agreements.  See the NOTICE file
++# distributed with this work for additional information
++# regarding copyright ownership.  The ASF licenses this file
++# to you under the Apache License, Version 2.0 (the
++# "License"); you may not use this file except in compliance
++# with the License.  You may obtain a copy of the License at
++#
++#     http://www.apache.org/licenses/LICENSE-2.0
++#
++# Unless required by applicable law or agreed to in writing, software
++# distributed under the License is distributed on an "AS IS" BASIS,
++# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++# See the License for the specific language governing permissions and
++# limitations under the License.
++#
++
++module Shell
++  module Commands
++    class Snapshot < Command
++      def help
++        return <<-EOF
++Take a snapshot of specified table. Examples:
++
++  hbase> snapshot 't1', 'my-snapshot'
++  hbase> snapshot 't1', 'my-snapshot', 'global'
++EOF
++      end
++
++      def command(table, snapshot_name, snapshot_type=nil)
++        format_simple_command do
++          admin.snapshot(table, snapshot_name, snapshot_type)
++          formatter.row(["created snapshot " + snapshot_name])
++        end
++      end
++    end
++  end
++end

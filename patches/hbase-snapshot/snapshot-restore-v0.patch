@@ -1,0 +1,1775 @@
+diff --git a/hbase-server/src/main/java/org/apache/hadoop/hbase/executor/EventHandler.java b/hbase-server/src/main/java/org/apache/hadoop/hbase/executor/EventHandler.java
+index e5dbaa1..7cd2239 100644
+--- a/hbase-server/src/main/java/org/apache/hadoop/hbase/executor/EventHandler.java
++++ b/hbase-server/src/main/java/org/apache/hadoop/hbase/executor/EventHandler.java
+@@ -132,6 +132,7 @@ public abstract class EventHandler implements Runnable, Comparable<Runnable> {
+     C_M_MODIFY_FAMILY         (46, null), // Client asking Master to modify family of table
+     C_M_CREATE_TABLE          (47, ExecutorType.MASTER_TABLE_OPERATIONS),   // Client asking Master to create a table
+     C_M_SNAPSHOT_TABLE        (48, ExecutorType.MASTER_TABLE_OPERATIONS),   // Client asking Master to snapshot an offline table
++    C_M_RESTORE_TABLE         (49, ExecutorType.MASTER_TABLE_OPERATIONS),   // Client asking Master to restore a table
+ 
+     // Updates from master to ZK. This is done by the master and there is
+     // nothing to process by either Master or RS
+diff --git a/hbase-server/src/main/java/org/apache/hadoop/hbase/io/HFileLink.java b/hbase-server/src/main/java/org/apache/hadoop/hbase/io/HFileLink.java
+new file mode 100644
+index 0000000..5576065
+--- /dev/null
++++ b/hbase-server/src/main/java/org/apache/hadoop/hbase/io/HFileLink.java
+@@ -0,0 +1,369 @@
++/**
++ * Licensed to the Apache Software Foundation (ASF) under one
++ * or more contributor license agreements.  See the NOTICE file
++ * distributed with this work for additional information
++ * regarding copyright ownership.  The ASF licenses this file
++ * to you under the Apache License, Version 2.0 (the
++ * "License"); you may not use this file except in compliance
++ * with the License.  You may obtain a copy of the License at
++ *
++ *     http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++package org.apache.hadoop.hbase.io;
++
++import java.io.FileNotFoundException;
++import java.io.BufferedInputStream;
++import java.io.DataInput;
++import java.io.DataOutput;
++import java.io.IOException;
++import java.io.InputStream;
++import java.util.regex.Matcher;
++import java.util.regex.Pattern;
++
++import org.apache.commons.logging.Log;
++import org.apache.commons.logging.LogFactory;
++import org.apache.hadoop.classification.InterfaceAudience;
++import org.apache.hadoop.conf.Configuration;
++import org.apache.hadoop.fs.FSDataInputStream;
++import org.apache.hadoop.fs.FileSystem;
++import org.apache.hadoop.fs.Path;
++import org.apache.hadoop.fs.FileStatus;
++import org.apache.hadoop.fs.PositionedReadable;
++import org.apache.hadoop.fs.Seekable;
++import org.apache.hadoop.hbase.HRegionInfo;
++import org.apache.hadoop.hbase.util.HFileArchiveUtil;
++import org.apache.hadoop.hbase.util.FSUtils;
++import org.apache.hadoop.hbase.util.Bytes;
++
++/**
++ * HFileLink describe a link to an hfile.
++ *
++ * An hfile can be in /hbase/<table>/<region>/<cf>/<hfile>
++ * or can be in /hbase/.archive/<table>/<region>/<cf>/<hfile>
++ *
++ * The link check first in the original path if it is not present
++ * it fallbacks to the archived path.
++ */
++public class HFileLink {
++  /** Define the HFile Link name pattern in the form of: hfile-region-table */
++  public static final Pattern LINK_NAME_PARSER = Pattern.compile("^([0-9a-f]+)-([0-9a-f]+)-(?:(.+))?$");
++
++  /**
++   * HFileLink InputStream that handles the switch between the original path
++   * and the archived path, when the file is moved.
++   */
++  static class HFileLinkInputStream extends InputStream
++    implements Seekable, PositionedReadable {
++    private FSDataInputStream in = null;
++    private boolean fromArchive = false;
++    private long pos = 0;
++
++    private HFileLink hfileLink;
++    private FileSystem fs;
++
++    public HFileLinkInputStream(FileSystem fs, HFileLink hfileLink)
++      throws IOException {
++      this.hfileLink = hfileLink;
++      this.fs = fs;
++
++      try {
++        in = fs.open(hfileLink.getOriginPath());
++      } catch (FileNotFoundException e) {
++        in = fs.open(hfileLink.getArchivePath());
++        fromArchive = true;
++      }
++    }
++
++    public int read() throws IOException {
++      int res;
++      try {
++        res = in.read();
++      } catch (FileNotFoundException e) {
++        if (fromArchive) throw e;
++        res = openFromArchive().read();
++      }
++      if (res > 0) pos += 1;
++      return res;
++    }
++
++    public int read(byte b[]) throws IOException {
++       return read(b, 0, b.length);
++    }
++
++    public int read(byte b[], int off, int len) throws IOException {
++      int n;
++      try {
++        n = in.read(b, off, len);
++      } catch (FileNotFoundException e) {
++        if (fromArchive) throw e;
++        n = openFromArchive().read(b, off, len);
++      }
++      if (n > 0) pos += n;
++      return n;
++    }
++
++    public int read(long position, byte[] buffer, int offset, int length) throws IOException {
++      int n;
++      try {
++        n = in.read(position, buffer, offset, length);
++      } catch (FileNotFoundException e) {
++        if (fromArchive) throw e;
++        n = openFromArchive().read(position, buffer, offset, length);
++      }
++      return n;
++    }
++
++    public void readFully(long position, byte[] buffer) throws IOException {
++      readFully(position, buffer, 0, buffer.length);
++    }
++
++    public void readFully(long position, byte[] buffer, int offset, int length) throws IOException {
++      try {
++        in.readFully(position, buffer, offset, length);
++      } catch (FileNotFoundException e) {
++        if (fromArchive) throw e;
++        openFromArchive().readFully(position, buffer, offset, length);
++      }
++    }
++
++    public long skip(long n) throws IOException {
++      long skipped;
++
++      try {
++        skipped = in.skip(n);
++      } catch (FileNotFoundException e) {
++        if (fromArchive) throw e;
++        skipped = openFromArchive().skip(n);
++      }
++
++      if (skipped > 0) pos += skipped;
++      return skipped;
++    }
++
++    public int available() throws IOException {
++      try {
++        return in.available();
++      } catch (FileNotFoundException e) {
++        if (fromArchive) throw e;
++        return openFromArchive().available();
++      }
++    }
++
++    public void seek(long pos) throws IOException {
++      try {
++         in.seek(pos);
++      } catch (FileNotFoundException e) {
++        if (fromArchive) throw e;
++        openFromArchive().seek(pos);
++      }
++      this.pos = pos;
++    }
++
++    public long getPos() throws IOException {
++      return pos;
++    }
++
++    public boolean seekToNewSource(long targetPos) throws IOException {
++      boolean res;
++      try {
++         res = in.seekToNewSource(targetPos);
++      } catch (FileNotFoundException e) {
++         if (fromArchive) throw e;
++         res = openFromArchive().seekToNewSource(targetPos);
++      }
++      if (res) pos = targetPos;
++      return res;
++    }
++
++    public void close() throws IOException {
++      in.close();
++    }
++
++    public synchronized void mark(int readlimit) {
++    }
++
++    public synchronized void reset() throws IOException {
++      throw new IOException("mark/reset not supported");
++    }
++
++    public boolean markSupported() {
++      return false;
++    }
++
++    private FSDataInputStream openFromArchive() throws IOException {
++      in = fs.open(hfileLink.getArchivePath());
++      in.seek(pos);
++      fromArchive = true;
++      return in;
++    }
++  }
++
++  private final Path archivePath;
++  private final Path originPath;
++
++  /**
++   * @param conf {@link Configuration} from which to extract specific archive locations
++   * @param path The path of the HFile Link.
++   * @throws IOException on unexepcted error.
++   */
++  public HFileLink(Configuration conf, Path path) throws IOException {
++    Matcher m = LINK_NAME_PARSER.matcher(path.getName());
++    if (!m.matches()) {
++      throw new IllegalArgumentException(path.getName() + " is not a valid hfile shadow name!");
++    }
++
++    String hfileName = m.group(1);
++    String regionName = m.group(2);
++    String tableName = m.group(3);
++    String familyName = path.getParent().getName();
++    Path hfilePath = new Path(new Path(tableName, regionName), new Path(familyName, hfileName));
++
++    this.originPath = new Path(FSUtils.getRootDir(conf), hfilePath);
++    this.archivePath = new Path(HFileArchiveUtil.getArchivePath(conf), hfilePath);
++  }
++
++  public HFileLink(Path originPath, Path archivePath) {
++    this.originPath = originPath;
++    this.archivePath = archivePath;
++  }
++
++  /**
++   * @return the path of the referenced hfile.
++   */
++  public Path getReferencedPath(FileSystem fs) throws IOException {
++    if (fs.exists(this.originPath)) {
++      return this.originPath;
++    }
++    return this.archivePath;
++  }
++
++  /**
++   * @return the origin path of the hfile.
++   */
++  public Path getOriginPath() {
++    return this.originPath;
++  }
++
++  /**
++   * @return the path of the archived hfile.
++   */
++  public Path getArchivePath() {
++    return this.archivePath;
++  }
++
++  /**
++   * Get the FileStatus of the referenced hfile.
++   *
++   * @param fs {@link FileSystem} on which to get the file status
++   * @return InputStream for the hfile link.
++   * @throws IOException on unexepcted error.
++   */
++  public FileStatus getFileStatus(FileSystem fs) throws IOException {
++    return fs.getFileStatus(getReferencedPath(fs));
++  }
++
++  /**
++   * Open the HFileLink for read.
++   * It uses the HFileLinkInputStream to been able to switch between the
++   * original path and archived path when the file is moved.
++   *
++   * @param fs {@link FileSystem} on which to open the HFileLink
++   * @return InputStream for the hfile link.
++   * @throws IOException on unexepcted error.
++   */
++  public FSDataInputStream open(FileSystem fs) throws IOException {
++    return new FSDataInputStream(new HFileLinkInputStream(fs, this));
++  }
++
++  /**
++   * @param p Path to check.
++   * @return True if the path is a HFileLink.
++   */
++  public static boolean isHFileLink(final Path path) {
++    return isHFileLink(path.getName());
++  }
++
++
++  /**
++   * @param fileName File name to check.
++   * @return True if the path is a HFileLink.
++   */
++  public static boolean isHFileLink(String fileName) {
++    Matcher m = LINK_NAME_PARSER.matcher(fileName);
++    if (!m.matches()) return false;
++
++    return m.groupCount() > 2 && m.group(2) != null && m.group(3) != null;
++  }
++
++  /**
++   * Get the HFileLink referenced path.
++   *
++   * @param fs {@link FileSystem} on which to check the HFileLink
++   * @param path HFileLink path
++   * @return Referenced path (original path or archived path)
++   * @throws IOException on unexepcted error.
++   */
++  public static Path getReferencedPath(FileSystem fs, final Path path) throws IOException {
++    return getReferencedPath(fs.getConf(), fs, path);
++  }
++
++  /**
++   * Get the HFileLink referenced path.
++   *
++   * @param fs {@link FileSystem} on which to check the HFileLink
++   * @param conf {@link Configuration} from which to extract specific archive locations
++   * @param path HFileLink path
++   * @return Referenced path (original path or archived path)
++   * @throws IOException on unexepcted error.
++   */
++  public static Path getReferencedPath(Configuration conf, FileSystem fs, final Path path)
++      throws IOException {
++    // hfile-region-table
++    Matcher m = LINK_NAME_PARSER.matcher(path.getName());
++    if (!m.matches()) {
++      throw new IllegalArgumentException(path.getName() + " is not a valid hfile shadow name!");
++    }
++
++    String hfileName = m.group(1);
++    String regionName = m.group(2);
++    String tableName = m.group(3);
++    String familyName = path.getParent().getName();
++    Path hfilePath = new Path(new Path(tableName, regionName), new Path(familyName, hfileName));
++
++    Path originPath = new Path(FSUtils.getRootDir(conf), hfilePath);
++    if (fs.exists(originPath)) {
++      return originPath;
++    }
++    return new Path(HFileArchiveUtil.getArchivePath(conf), hfilePath);
++  }
++
++  public static String getReferencedHFileName(String fileName) {
++    Matcher m = LINK_NAME_PARSER.matcher(fileName);
++    if (!m.matches()) {
++      throw new IllegalArgumentException(fileName + " is not a valid hfile shadow name!");
++    }
++    return(m.group(1));
++  }
++
++  /**
++   * Create a new HFileLink
++   *
++   * @param fs {@link FileSystem} on which to write the HFileLink
++   * @param dstPath - HRegionInfo that describes the region
++   * @param hfileRegionInfo - Linked HFile Region
++   * @param hfileName - Linked HFile name
++   * @throws IOException on unexepcted error.
++   */
++  public static void create(FileSystem fs, final Path dstPath,
++      HRegionInfo hfileRegionInfo,   String hfileName) throws IOException {
++    String name = hfileName + "-" + hfileRegionInfo.getEncodedName() + "-" + hfileRegionInfo.getTableNameAsString();
++    fs.mkdirs(dstPath);
++    fs.createNewFile(new Path(dstPath, name));
++  }
++}
+\ No newline at end of file
+diff --git a/hbase-server/src/main/java/org/apache/hadoop/hbase/io/Reference.java b/hbase-server/src/main/java/org/apache/hadoop/hbase/io/Reference.java
+index 4d8f81a..4e1cb96 100644
+--- a/hbase-server/src/main/java/org/apache/hadoop/hbase/io/Reference.java
++++ b/hbase-server/src/main/java/org/apache/hadoop/hbase/io/Reference.java
+@@ -329,11 +329,11 @@ public class Reference implements Writable {
+   public static String getDeferencedHFileName(String fileName) {
+     Matcher m = Reference.REF_OR_HFILE_NAME_PARSER.matcher(fileName);
+     if (!m.matches()) throw new IllegalArgumentException(
+-        "Not a valid reference file or hfile name!");
++        fileName + " is not a valid reference file or hfile name!");
+     // otherwise, it matches
+     // if it is a reference, then get the original file
+     if (getMatcherFoundReference(m)) return m.group(1);
+     // if it matches, but isn't a reference file, then its just an hfile
+     return fileName;
+   }
+-}
+\ No newline at end of file
++}
+diff --git a/hbase-server/src/main/java/org/apache/hadoop/hbase/io/hfile/HFile.java b/hbase-server/src/main/java/org/apache/hadoop/hbase/io/hfile/HFile.java
+index 8e78a60..84c00c7 100644
+--- a/hbase-server/src/main/java/org/apache/hadoop/hbase/io/hfile/HFile.java
++++ b/hbase-server/src/main/java/org/apache/hadoop/hbase/io/hfile/HFile.java
+@@ -565,6 +565,27 @@ public class HFile {
+         preferredEncodingInCache, hfs);
+   }
+ 
++  public static Reader createReaderWithEncoding(
++      FileSystem fs, Path path, FSDataInputStream fsdis,
++      FSDataInputStream fsdisNoFsChecksum, long size, CacheConfig cacheConf,
++      DataBlockEncoding preferredEncodingInCache, boolean closeIStream)
++      throws IOException {
++    HFileSystem hfs = null;
++
++    // If the fs is not an instance of HFileSystem, then create an
++    // instance of HFileSystem that wraps over the specified fs.
++    // In this case, we will not be able to avoid checksumming inside
++    // the filesystem.
++    if (!(fs instanceof HFileSystem)) {
++      hfs = new HFileSystem(fs);
++    } else {
++      hfs = (HFileSystem)fs;
++    }
++    return pickReaderVersion(path, fsdis, fsdisNoFsChecksum, size,
++                             closeIStream, cacheConf,
++                             preferredEncodingInCache, hfs);
++  }
++
+   /**
+    *
+    * @param fs filesystem
+diff --git a/hbase-server/src/main/java/org/apache/hadoop/hbase/master/handler/MountSnapshotHandler.java b/hbase-server/src/main/java/org/apache/hadoop/hbase/master/handler/MountSnapshotHandler.java
+new file mode 100644
+index 0000000..56fab45
+--- /dev/null
++++ b/hbase-server/src/main/java/org/apache/hadoop/hbase/master/handler/MountSnapshotHandler.java
+@@ -0,0 +1,454 @@
++/**
++ * Licensed to the Apache Software Foundation (ASF) under one
++ * or more contributor license agreements.  See the NOTICE file
++ * distributed with this work for additional information
++ * regarding copyright ownership.  The ASF licenses this file
++ * to you under the Apache License, Version 2.0 (the
++ * "License"); you may not use this file except in compliance
++ * with the License.  You may obtain a copy of the License at
++ *
++ *     http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++package org.apache.hadoop.hbase.master.handler;
++
++import java.util.concurrent.atomic.AtomicBoolean;
++import java.io.EOFException;
++import java.io.IOException;
++import java.util.ArrayList;
++import java.util.HashSet;
++import java.util.TreeMap;
++import java.util.List;
++import java.util.Map;
++
++import org.apache.hadoop.hbase.regionserver.wal.WALEdit;
++import org.apache.hadoop.hbase.regionserver.wal.HLogKey;
++import org.apache.hadoop.hbase.regionserver.MemStore;
++import org.apache.hadoop.hbase.HConstants;
++import org.apache.hadoop.hbase.KeyValue;
++
++import org.apache.commons.logging.Log;
++import org.apache.commons.logging.LogFactory;
++import org.apache.hadoop.conf.Configuration;
++import org.apache.hadoop.fs.FileStatus;
++import org.apache.hadoop.fs.FileSystem;
++import org.apache.hadoop.fs.Path;
++import org.apache.hadoop.hbase.io.Reference;
++import org.apache.hadoop.hbase.io.HFileLink;
++import org.apache.hadoop.hbase.HRegionInfo;
++import org.apache.hadoop.hbase.HTableDescriptor;
++import org.apache.hadoop.hbase.HColumnDescriptor;
++import org.apache.hadoop.hbase.Server;
++import org.apache.hadoop.hbase.master.MasterServices;
++import org.apache.hadoop.hbase.regionserver.HRegion;
++import org.apache.hadoop.hbase.regionserver.wal.HLog;
++import org.apache.hadoop.hbase.snapshot.SnapshotDescriptor;
++import org.apache.hadoop.hbase.snapshot.monitor.SnapshotFailureMonitor;
++import org.apache.hadoop.hbase.util.FSTableDescriptors;
++import org.apache.hadoop.hbase.catalog.MetaReader;
++import org.apache.hadoop.hbase.catalog.MetaEditor;
++import org.apache.hadoop.hbase.util.Bytes;
++import org.apache.hadoop.fs.FSDataInputStream;
++import org.apache.hadoop.hbase.util.FSUtils;
++
++/**
++ * Restore a snapshot of a new disabled table.
++ * This implementation assume that the table is new or empty.
++ * On failure the table will be cleared out.
++ */
++public class MountSnapshotHandler extends TableEventHandler {
++  private static final Log LOG = LogFactory.getLog(MountSnapshotHandler.class);
++
++  /**
++   * /hbase/.logs/benedikte,51902,1344765382811/benedikte%2C51902%2C1344765382811.1344765384586
++   * /hbase/.snapshot/foo/.logs/benedikte,51902,1344765382811/benedikte%2C51902%2C1344765382811.1344765384586.hbase
++   */
++  class SnapshotLogSplitter {
++    private final Map<byte[], LogWriter> regionLogWriters =
++        new TreeMap<byte[], LogWriter>(Bytes.BYTES_COMPARATOR);
++
++    private final Configuration conf;
++    private final byte[] tableName;
++    private final Path tableDir;
++    private final FileSystem fs;
++
++    final class LogWriter {
++      private HLog.Writer writer;
++      private Path logFile;
++      private long seqId;
++
++      public LogWriter(final Configuration conf, final FileSystem fs,
++          final Path logDir, long seqId) throws IOException {
++        logFile = new Path(logDir, logFileName(seqId, true));
++        this.writer = HLog.createWriter(fs, logFile, conf);
++        this.seqId = seqId;
++      }
++
++      public void close() throws IOException {
++        writer.close();
++
++        Path finalFile = new Path(logFile.getParent(), logFileName(seqId, false));
++        LOG.debug("LogWriter tmpLogFile=" + logFile + " -> logFile=" + finalFile);
++        fs.rename(logFile, finalFile);
++      }
++
++      public void append(HLog.Entry entry) throws IOException {
++        writer.append(entry);
++        if (seqId < entry.getKey().getLogSeqNum()) {
++          seqId = entry.getKey().getLogSeqNum();
++        }
++      }
++
++      private String logFileName(long seqId, boolean temp) {
++        String fileName = String.format("%019d", seqId);
++        if (temp) fileName += HLog.RECOVERED_LOG_TMPFILE_SUFFIX;
++        return fileName;
++      }
++    }
++
++    public SnapshotLogSplitter(Configuration conf, FileSystem fs,
++        final byte[] tableName, final Path tableDir) {
++      this.tableName = tableName;
++      this.tableDir = tableDir;
++      this.conf = conf;
++      this.fs = fs;
++    }
++
++    public void close() throws IOException {
++      for (LogWriter writer: regionLogWriters.values()) {
++        writer.close();
++      }
++    }
++
++    public void splitLog(final Path hlogRefPath) throws IOException {
++      LOG.debug("Restore log=" + hlogRefPath + " reference=" + resolveLogReference(hlogRefPath));
++      LOG.debug("Split tableName=" + Bytes.toString(tableName));
++
++      /* TODO: Need to use something like HFileLink instead resolveLogReference() */
++      HLog.Reader log = HLog.getReader(fs, resolveLogReference(hlogRefPath), conf);
++      try {
++        HLog.Entry entry;
++        LogWriter writer = null;
++        byte[] regionName = null;
++        byte[] newRegionName = null;
++        while ((entry = log.next()) != null) {
++          HLogKey key = entry.getKey();
++
++          // We're interested only in the snapshot table that we're restoring
++          if (!Bytes.equals(key.getTablename(), tableName)) continue;
++
++          // Writer for region.
++          if (!Bytes.equals(regionName, key.getEncodedRegionName())) {
++            // TODO: GlobalSnapshotRequestHandler.ServerRegionInfo.MOCK_INFO_NAME_PREFIX
++            if (Bytes.toString(key.getEncodedRegionName()).startsWith("_$NOT_A_REGION$_")) {
++              break;
++            }
++
++            regionName = key.getEncodedRegionName().clone();
++            newRegionName = regionsMap.get(regionName);
++            writer = getOrCreateWriter(newRegionName, key.getLogSeqNum());
++            LOG.debug("+ regionName=" + Bytes.toString(regionName));
++          }
++
++          // Append Entry
++          key = new HLogKey(newRegionName, tableDir.getName().getBytes(),
++                            key.getLogSeqNum(), key.getWriteTime(), key.getClusterId());
++          writer.append(new HLog.Entry(key, entry.getEdit()));
++        }
++      } catch (IOException e) {
++        LOG.warn("Something wrong during the log split", e);
++      } finally {
++        log.close();
++      }
++    }
++
++    private Path resolveLogReference(final Path hlogRefPath) throws IOException {
++      String regionPath = hlogRefPath.getParent().getName();
++      String logName = hlogRefPath.getName();
++      logName = logName.substring(0, logName.length() - 6);
++      Path fullPath = new Path(new Path(tableDir.getParent(), HConstants.HREGION_OLDLOGDIR_NAME), logName);
++      if (fs.exists(fullPath)) return(fullPath);
++      return new Path(new Path(tableDir.getParent(), HConstants.HREGION_LOGDIR_NAME), new Path(regionPath, logName));
++    }
++
++    private LogWriter getOrCreateWriter(final byte[] regionName, long seqId) throws IOException {
++      LogWriter writer = regionLogWriters.get(regionName);
++      if (writer == null) {
++        Path regionDir = HRegion.getRegionDir(tableDir, Bytes.toString(regionName));
++        Path dir = HLog.getRegionDirRecoveredEditsDir(regionDir);
++        fs.mkdirs(dir);
++
++        writer = new LogWriter(conf, fs, dir, seqId);
++        regionLogWriters.put(regionName, writer);
++      }
++      return(writer);
++    }
++  }
++
++  protected final Map<byte[], byte[]> regionsMap =
++        new TreeMap<byte[], byte[]>(Bytes.BYTES_COMPARATOR);
++
++  protected final SnapshotFailureMonitor errorMonitor;
++  protected final SnapshotDescriptor snapshot;
++  protected final AtomicBoolean isRestoreDone;
++  protected final HTableDescriptor htd;
++  protected final HTableDescriptor std;
++  protected final Configuration conf;
++  protected final Path snapshotDir;
++  protected final Path tableDir;
++  protected final FileSystem fs;
++
++  /**
++   * @param snapshot descriptor of the snapshot to take
++   * @param server parent server
++   * @param masterServices master services provider
++   * @param errorMonitor monitor the health of the snapshot
++   * @throws IOException on unexpected error
++   */
++  public MountSnapshotHandler(SnapshotDescriptor snapshot, byte[] tableName, AtomicBoolean isRestoreDone,
++      Server server, final MasterServices masterServices,
++      SnapshotFailureMonitor errorMonitor) throws IOException {
++    super(EventType.C_M_RESTORE_TABLE, tableName, server, masterServices);
++
++    // The next call fails if no such table.
++    htd = getTableDescriptor();
++
++    this.snapshot = snapshot;
++    this.errorMonitor = errorMonitor;
++    this.isRestoreDone = isRestoreDone;
++
++    conf = this.masterServices.getConfiguration();
++    fs = masterServices.getMasterFileSystem().getFileSystem();
++
++    Path rootDir = masterServices.getMasterFileSystem().getRootDir();
++    snapshotDir = SnapshotDescriptor.getCompletedSnapshotDir(snapshot.getSnapshotName(), rootDir);
++    tableDir = HTableDescriptor.getTableDir(rootDir, this.tableName);
++
++    std = FSTableDescriptors.getTableDescriptor(fs, snapshotDir, snapshot.getTableName());
++
++    if (!isValidTableDescriptor()) {
++      throw new IOException("Table '" + Bytes.toString(tableName) +
++              "' schema must be equals or a super set of the snapshotted table.");
++    }
++  }
++
++  @Override
++  protected void handleTableOperation(List<HRegionInfo> regions) throws IOException {
++    LOG.debug("Starting snapshot mount: " + snapshot + " as " + tableName);
++
++    // Cleanup the previous table data.
++    deleteRegions(regions);
++
++    try {
++      // Restore the table
++      restoreTable();
++
++      // Restore WALs
++      restoreLogs();
++
++      // Restore completed
++      isRestoreDone.set(true);
++    } catch (IOException e) {
++      // Restore Failed
++      errorMonitor.snapshotFailure(snapshot, e.getMessage());
++
++      // Rollback the restore, remove the created regions.
++      regions = MetaReader.getTableRegions(this.server.getCatalogTracker(), tableName);
++      deleteRegions(regions);
++    }
++  }
++
++  /**
++   * Delete the regions from .META. and from filesystem.
++   */
++  protected void deleteRegions(List<HRegionInfo> regions) throws IOException {
++    for (HRegionInfo region: regions) {
++      // Remove region from META
++      MetaEditor.deleteRegion(this.server.getCatalogTracker(), region);
++      // Delete region from FS
++      this.masterServices.getMasterFileSystem().deleteRegion(region);
++    }
++  }
++
++  /**
++   * Restore the table with the snapshot content.
++   */
++  private void restoreTable() throws IOException {
++    final int batchSize = this.conf.getInt("hbase.master.createtable.batchsize", 100);
++
++    List<HRegionInfo> regionInfos = new ArrayList<HRegionInfo>();
++
++    for(FileStatus regionDir: fs.listStatus(snapshotDir, new FSUtils.DirFilter(fs))) {
++      // Check if the directory contains a .regioninfo (Is a region?)
++      Path regionInfoPath = new Path(regionDir.getPath(), HRegion.REGIONINFO_FILE);
++      if (!fs.exists(regionInfoPath)) continue;
++
++      // Restore the Region
++      HRegionInfo regionInfo = restoreRegion(regionDir.getPath());
++      regionInfos.add(regionInfo);
++
++      if (regionInfos.size() % batchSize == 0) {
++        // Insert into META
++        MetaEditor.addRegionsToMeta(this.server.getCatalogTracker(), regionInfos);
++        regionInfos.clear();
++      }
++    }
++
++    // Insert into META
++    if (regionInfos.size() > 0) {
++      MetaEditor.addRegionsToMeta(this.server.getCatalogTracker(), regionInfos);
++    }
++  }
++
++  /**
++   * Restore WALs in .snapshots/.logs/
++   */
++  protected void restoreLogs() throws IOException {
++    Path path = new Path(snapshotDir, HConstants.HREGION_LOGDIR_NAME);
++    FileStatus[] logDirs = fs.listStatus(path);
++    if (logDirs == null || logDirs.length == 0) {
++      // nothing to do
++      return;
++    }
++
++    SnapshotLogSplitter logSplitter = new SnapshotLogSplitter(conf, fs, std.getName(), tableDir);
++    try {
++      for (FileStatus serverLogs: logDirs) {
++        for (FileStatus hlogRef: fs.listStatus(serverLogs.getPath())) {
++          logSplitter.splitLog(hlogRef.getPath());
++        }
++      }
++    } finally {
++      logSplitter.close();
++    }
++  }
++
++  /**
++   * Restore a region with the snapshot content.
++   */
++  protected HRegionInfo restoreRegion(Path snapshotRegionDir) throws IOException {
++    // Load Snapshot Region Info
++    HRegionInfo snapshotRegionInfo = readRegionInfo(snapshotRegionDir);
++
++    // Create the region for the table.
++    HRegion region = createRegionInfo(snapshotRegionInfo);
++    HRegionInfo regionInfo = region.getRegionInfo();
++    LOG.debug("Restore region " + regionInfo);
++
++    try {
++      Path regionDir = new Path(tableDir, regionInfo.getEncodedName());
++      for (HColumnDescriptor hcd: std.getFamilies()) {
++        Path snapshotFamilyDir = new Path(snapshotRegionDir, hcd.getNameAsString());
++        Path familyDir = new Path(regionDir, hcd.getNameAsString());
++
++        restoreRegionFamily(snapshotRegionInfo, snapshotFamilyDir, familyDir);
++      }
++    } finally {
++      region.close();
++    }
++
++    return regionInfo;
++  }
++
++  /**
++   * Create a HFileLink for each hfile in the specified region/column family.
++   */
++  private void restoreRegionFamily(HRegionInfo snapshotRegionInfo,
++      Path snapshotFamilyDir, Path familyDir) throws IOException {
++    for (FileStatus hfileRef: fs.listStatus(snapshotFamilyDir)) {
++      if (!Reference.isReference(hfileRef.getPath())) continue;
++
++      String hfileName = Reference.getDeferencedHFileName(hfileRef.getPath().getName());
++      HFileLink.create(fs, familyDir, snapshotRegionInfo, hfileName);
++    }
++  }
++
++  /**
++   * Read .regioninfo file in the specified regionDir.
++   */
++  protected HRegionInfo readRegionInfo(Path regionDir) throws IOException {
++    FSDataInputStream inputStream = fs.open(new Path(regionDir, HRegion.REGIONINFO_FILE));
++    HRegionInfo regionInfo = HRegionInfo.parseFrom(inputStream);
++    inputStream.close();
++    return regionInfo;
++  }
++
++  /**
++   * Create a Region from a snapshot region info.
++   */
++  protected HRegion createRegionInfo(HRegionInfo snapshotRegionInfo) throws IOException {
++    HRegionInfo regionInfo = new HRegionInfo(tableName,
++                      snapshotRegionInfo.getStartKey(), snapshotRegionInfo.getEndKey(),
++                      snapshotRegionInfo.isSplit(), snapshotRegionInfo.getRegionId());
++
++    HRegion region = HRegion.createHRegion(regionInfo,
++                      this.masterServices.getMasterFileSystem().getRootDir(),
++                      this.conf, htd);
++
++    regionsMap.put(snapshotRegionInfo.getEncodedNameAsBytes(), regionInfo.getEncodedNameAsBytes());
++    return region;
++  }
++
++
++  /**
++   * Verify if the new table description is equal or a super set
++   * of the snapshot table descriptor.
++   *
++   * - All the snapshot families must be in the new table descriptor
++   * - Each family must have match the snapshot:
++   *    - compression settings
++   *    - block encoding
++   *    - block size
++   */
++  private boolean isValidTableDescriptor() {
++    // The number of families should be greater or equals to the original table families
++    if (htd.getFamilies().size() < std.getFamilies().size()) {
++      LOG.error("Not all families are present in the snapshot '" + snapshot.getSnapshotNameAsString() +
++                "' are present in table '" + Bytes.toString(tableName) + "'");
++      return false;
++    }
++
++    // Check if all the column families are available and has the same types.
++    for (HColumnDescriptor sFamily: std.getFamilies()) {
++      HColumnDescriptor tFamily = htd.getFamily(sFamily.getName());
++
++      // Is the family available?
++      if (tFamily == null) {
++        LOG.error("Family '" + sFamily.getNameAsString() +
++                  "' present in the snapshot is not available in the new table.");
++        return false;
++      }
++
++      // Has the same compression settings?
++      if ((sFamily.getCompressionType() != tFamily.getCompressionType()) ||
++          (sFamily.getCompactionCompressionType() != tFamily.getCompactionCompressionType()))
++      {
++        LOG.error("Family '" + sFamily.getNameAsString() +
++                  "' has different compression settings from the snapshot one.");
++        return false;
++      }
++
++      // Has the same encoding?
++      if (sFamily.getDataBlockEncoding() != tFamily.getDataBlockEncoding()) {
++        LOG.error("Family '" + sFamily.getNameAsString() +
++                  "' has different data block encoding from the snapshot one.");
++        return false;
++      }
++
++      // Has the same block size?
++      if (sFamily.getBlocksize() != tFamily.getBlocksize()) {
++        LOG.error("Family '" + sFamily.getNameAsString() +
++                  "' has different block size from the snapshot one.");
++        return false;
++      }
++    }
++
++    return true;
++  }
++}
+diff --git a/hbase-server/src/main/java/org/apache/hadoop/hbase/master/handler/RestoreSnapshotHandler.java b/hbase-server/src/main/java/org/apache/hadoop/hbase/master/handler/RestoreSnapshotHandler.java
+new file mode 100644
+index 0000000..f0ef4ea
+--- /dev/null
++++ b/hbase-server/src/main/java/org/apache/hadoop/hbase/master/handler/RestoreSnapshotHandler.java
+@@ -0,0 +1,222 @@
++/**
++ * Licensed to the Apache Software Foundation (ASF) under one
++ * or more contributor license agreements.  See the NOTICE file
++ * distributed with this work for additional information
++ * regarding copyright ownership.  The ASF licenses this file
++ * to you under the Apache License, Version 2.0 (the
++ * "License"); you may not use this file except in compliance
++ * with the License.  You may obtain a copy of the License at
++ *
++ *     http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++package org.apache.hadoop.hbase.master.handler;
++
++import java.util.concurrent.atomic.AtomicBoolean;
++import java.io.IOException;
++import java.util.ArrayList;
++import java.util.HashSet;
++import java.util.List;
++
++import org.apache.commons.logging.Log;
++import org.apache.commons.logging.LogFactory;
++import org.apache.hadoop.conf.Configuration;
++import org.apache.hadoop.fs.FileStatus;
++import org.apache.hadoop.fs.FileSystem;
++import org.apache.hadoop.fs.Path;
++import org.apache.hadoop.hbase.io.Reference;
++import org.apache.hadoop.hbase.io.HFileLink;
++import org.apache.hadoop.hbase.HRegionInfo;
++import org.apache.hadoop.hbase.HTableDescriptor;
++import org.apache.hadoop.hbase.HColumnDescriptor;
++import org.apache.hadoop.hbase.Server;
++import org.apache.hadoop.hbase.master.MasterServices;
++import org.apache.hadoop.hbase.regionserver.HRegion;
++import org.apache.hadoop.hbase.regionserver.wal.HLog;
++import org.apache.hadoop.hbase.snapshot.SnapshotDescriptor;
++import org.apache.hadoop.hbase.snapshot.monitor.SnapshotFailureMonitor;
++import org.apache.hadoop.hbase.util.FSTableDescriptors;
++import org.apache.hadoop.hbase.catalog.MetaReader;
++import org.apache.hadoop.hbase.catalog.MetaEditor;
++import org.apache.hadoop.hbase.util.Bytes;
++import org.apache.hadoop.fs.FSDataInputStream;
++import org.apache.hadoop.hbase.util.FSUtils;
++
++/**
++ * Restore a snapshot on the original table.
++ * TODO: Need to take a snapshot of the current state and rollback in case of failure.
++ */
++public class RestoreSnapshotHandler extends MountSnapshotHandler {
++  private static final Log LOG = LogFactory.getLog(RestoreSnapshotHandler.class);
++
++  /**
++   * @param snapshot descriptor of the snapshot to take
++   * @param server parent server
++   * @param masterServices master services provider
++   * @param errorMonitor monitor the health of the snapshot
++   * @throws IOException on unexpected error
++   */
++  public RestoreSnapshotHandler(SnapshotDescriptor snapshot, AtomicBoolean isRestoreDone,
++      Server server, final MasterServices masterServices,
++      SnapshotFailureMonitor errorMonitor) throws IOException {
++    super(snapshot, snapshot.getTableName(), isRestoreDone, server, masterServices, errorMonitor);
++  }
++
++  @Override
++  protected void handleTableOperation(List<HRegionInfo> regions) throws IOException {
++    LOG.debug("Starting snapshot restore: " + snapshot + " as " + tableName);
++
++    HashSet<String> snapshotRegions = getSnapshotRegionNames();
++
++    for (String regionName: snapshotRegions) LOG.info("snapshot region -> " + regionName);
++
++    List<HRegionInfo> regionsToRestore = new ArrayList<HRegionInfo>();
++    List<HRegionInfo> regionsToRemove = new ArrayList<HRegionInfo>();
++    List<HRegionInfo> regionsToAdd = new ArrayList<HRegionInfo>();
++
++    // Identify which region are still available and wich not
++    for (HRegionInfo regionInfo: regions) {
++      String regionName = regionInfo.getEncodedName();
++      if (snapshotRegions.contains(regionName)) {
++        // TODO: CHECKME: Can we trust same region name? same region info? start/end key, ...?
++        LOG.info("Region to Restore -> " + regionName);
++        snapshotRegions.remove(regionName);
++        regionsToRestore.add(regionInfo);
++      } else {
++        LOG.info("Region to Remove -> " + regionName);
++        regionsToRemove.add(regionInfo);
++      }
++    }
++
++    // Regions to Add: present in the snapshot but not in the current table
++    for (String regionName: snapshotRegions) {
++      LOG.info("Region to Add -> " + regionName);
++      regionsToAdd.add(readRegionInfo(new Path(snapshotDir, regionName)));
++    }
++
++    try {
++      // Restore regions
++      for (HRegionInfo regionInfo: regionsToRestore) {
++        rollbackRegion(new Path(snapshotDir, regionInfo.getEncodedName()));
++      }
++
++      // Create new Regions
++      final int batchSize = this.conf.getInt("hbase.master.createtable.batchsize", 100);
++      List<HRegionInfo> createdRegions = new ArrayList<HRegionInfo>();
++      for (HRegionInfo regionInfo: regionsToAdd) {
++        Path regionDir = new Path(snapshotDir, regionInfo.getEncodedName());
++        HRegionInfo newRegionInfo = restoreRegion(regionDir);
++        createdRegions.add(newRegionInfo);
++
++        if (createdRegions.size() % batchSize == 0) {
++          // Insert into META
++          MetaEditor.addRegionsToMeta(this.server.getCatalogTracker(), createdRegions);
++          createdRegions.clear();
++        }
++      }
++
++      // Insert into META
++      if (createdRegions.size() > 0) {
++        MetaEditor.addRegionsToMeta(this.server.getCatalogTracker(), createdRegions);
++      }
++
++      // Remove regions
++      deleteRegions(regionsToRemove);
++
++      // Restore WALs
++      restoreLogs();
++
++      isRestoreDone.set(true);
++    } catch (IOException e) {
++      // Restore Failed
++      errorMonitor.snapshotFailure(snapshot, e.getMessage());
++
++      // TODO: HANDLE ROLLBACK TO THE PREVIOUS SNAPSHOT!
++      // TODO: NEED TO TAKE A SNAPSHOT IN THE BEGINNING OF THIS FUNCTION!
++    }
++  }
++
++  /**
++   * Returns a set of regions present in the snapshots.
++   */
++  private HashSet<String> getSnapshotRegionNames() throws IOException {
++    HashSet<String> regions = new HashSet<String>();
++
++    for (FileStatus regionDir: fs.listStatus(snapshotDir, new FSUtils.DirFilter(fs))) {
++      // Check if the directory contains a .regioninfo (Is a region?)
++      Path regionInfoPath = new Path(regionDir.getPath(), HRegion.REGIONINFO_FILE);
++      if (fs.exists(regionInfoPath)) regions.add(regionDir.getPath().getName());
++    }
++
++    return(regions);
++  }
++
++  /**
++   * Rollback a region with the snapshot content.
++   * NOTE: that the region exists both in snapshot and current state.
++   */
++  private void rollbackRegion(Path snapshotRegionDir) throws IOException {
++    // Load Snapshot Region Info
++    HRegionInfo snapshotRegionInfo = readRegionInfo(snapshotRegionDir);
++    LOG.debug("Rollback region " + snapshotRegionInfo);
++
++    Path regionDir = new Path(tableDir, snapshotRegionDir.getName());
++    for (HColumnDescriptor hcd: std.getFamilies()) {
++      Path snapshotFamilyDir = new Path(snapshotRegionDir, hcd.getNameAsString());
++      Path familyDir = new Path(regionDir, hcd.getNameAsString());
++      rollbackRegionFamily(snapshotRegionInfo, snapshotFamilyDir, familyDir);
++    }
++  }
++
++  /**
++   * Rollback the region/family to the snapshot state:
++   * - Identify hfiles to remove from the current table (not available in the snapshot)
++   * - Identify hfiles to restore from the snapshot (not available in the current state)
++   */
++  private void rollbackRegionFamily(HRegionInfo snapshotRegionInfo,
++      Path snapshotFamilyDir, Path familyDir) throws IOException {
++    // Extract snapshot hfiles
++    HashSet<String> snapshotFiles = new HashSet<String>();
++    for (FileStatus hfileRef: fs.listStatus(snapshotFamilyDir)) {
++      if (Reference.isReference(hfileRef.getPath())) {
++        snapshotFiles.add(Reference.getDeferencedHFileName(hfileRef.getPath().getName()));
++      }
++    }
++
++    // Extract files to remove and to restore
++    List<Path> hfilesToRemove = new ArrayList<Path>();
++    for (FileStatus hfileRef: fs.listStatus(familyDir)) {
++      String hfileName = hfileRef.getPath().getName();
++      if (HFileLink.isHFileLink(hfileName)) {
++        hfileName = HFileLink.getReferencedHFileName(hfileName);
++      } else if (Reference.checkReference(hfileRef.getPath())) {
++        hfileName = Reference.getDeferencedHFileName(hfileName);
++      }
++
++      if (snapshotFiles.contains(hfileName)) {
++        snapshotFiles.remove(hfileName);
++      } else {
++        hfilesToRemove.add(hfileRef.getPath());
++      }
++    }
++
++    // Restore Missing files
++    for (String hfileName: snapshotFiles) {
++      LOG.debug("Adding HFileLink '" + hfileName + "' to table '" + Bytes.toString(tableName) + "'.");
++      HFileLink.create(fs, familyDir, snapshotRegionInfo, hfileName);
++    }
++
++    // Remove hfiles not present in the snapshot (TODO: Use ArchiveManager)
++    for (Path hfile: hfilesToRemove) {
++      LOG.debug("Removing '" + hfile + "' from table '" + Bytes.toString(tableName) + "'.");
++      // TODO: HFileArchiver.archiveStoreFile(fs, hfile)?
++      fs.delete(hfile);
++    }
++  }
++}
+diff --git a/hbase-server/src/main/java/org/apache/hadoop/hbase/master/snapshot/manage/RestoreSnapshotSentinel.java b/hbase-server/src/main/java/org/apache/hadoop/hbase/master/snapshot/manage/RestoreSnapshotSentinel.java
+new file mode 100644
+index 0000000..73d3b3c
+--- /dev/null
++++ b/hbase-server/src/main/java/org/apache/hadoop/hbase/master/snapshot/manage/RestoreSnapshotSentinel.java
+@@ -0,0 +1,110 @@
++/**
++ * Licensed to the Apache Software Foundation (ASF) under one
++ * or more contributor license agreements.  See the NOTICE file
++ * distributed with this work for additional information
++ * regarding copyright ownership.  The ASF licenses this file
++ * to you under the Apache License, Version 2.0 (the
++ * "License"); you may not use this file except in compliance
++ * with the License.  You may obtain a copy of the License at
++ *
++ *     http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++package org.apache.hadoop.hbase.master.snapshot.manage;
++
++import java.io.IOException;
++import java.util.concurrent.atomic.AtomicBoolean;
++
++import org.apache.commons.logging.Log;
++import org.apache.commons.logging.LogFactory;
++
++import org.apache.hadoop.hbase.Server;
++import org.apache.hadoop.hbase.executor.ExecutorService;
++import org.apache.hadoop.hbase.master.MasterServices;
++import org.apache.hadoop.hbase.master.handler.MountSnapshotHandler;
++import org.apache.hadoop.hbase.master.handler.RestoreSnapshotHandler;
++import org.apache.hadoop.hbase.snapshot.monitor.SnapshotFailureMonitor;
++import org.apache.hadoop.hbase.snapshot.SnapshotCreationException;
++import org.apache.hadoop.hbase.snapshot.SnapshotDescriptor;
++import org.apache.hadoop.hbase.util.Bytes;
++
++/**
++ * {@link RestoreSnapshotSentinel} to run/monitor the restore of an 'offline'/disabled table.
++ */
++public class RestoreSnapshotSentinel implements SnapshotFailureMonitor {
++  private static final Log LOG = LogFactory.getLog(RestoreSnapshotSentinel.class);
++  private final AtomicBoolean isDone;
++  private final ExecutorService executor;
++  private final SnapshotDescriptor snapshot;
++  private final MasterServices master;
++  private final byte[] tableName;
++
++  private String errorDescription = null;
++
++  /**
++   * @param hsd descriptor for the snapshot to restore.
++   * @param tableName where the snapshot will be restored.
++   * @param master parent running the snapshot
++   * @param executorService executor to run the snapshot restore on
++   * @throws IOException
++   */
++  public RestoreSnapshotSentinel(SnapshotDescriptor hsd, byte[] tableName,
++      MasterServices master, ExecutorService executorService) throws IOException {
++    this.snapshot = hsd;
++    this.tableName = tableName;
++    this.isDone = new AtomicBoolean(false);
++    this.executor = executorService;
++    this.master = master;
++  }
++
++  public SnapshotDescriptor getSnapshot() {
++    return this.snapshot;
++  }
++
++  public void run() throws IOException {
++    MountSnapshotHandler restoreHandler;
++    if (Bytes.equals(getSnapshot().getTableName(), tableName)) {
++      restoreHandler = new RestoreSnapshotHandler(getSnapshot(), isDone, master, master, this);
++    } else {
++      restoreHandler = new MountSnapshotHandler(getSnapshot(), tableName,
++                                                isDone, master, master, this);
++    }
++
++    // submit the snapshot operation
++    this.executor.submit(restoreHandler);
++    LOG.debug("Waiting for restore snapshot to complete");
++
++    // wait for the snapshot to complete
++    while (!isDone.get()) {
++      synchronized (isDone) {
++        try {
++          isDone.wait(200);
++          failOnError();
++        } catch (InterruptedException e) {
++          LOG.debug("Interruped while waiting for restore snapshot to complete - ignoring!");
++        }
++      }
++    }
++    LOG.debug("Restore Snapshot completed on master, returning successfully.");
++  }
++
++  public void snapshotFailure(SnapshotDescriptor snapshot, String description) {
++    LOG.error("Snapshot restore failed: " + description);
++    errorDescription = description;
++  }
++
++  public void failOnError() throws SnapshotCreationException {
++    if (errorDescription != null) {
++      throw new SnapshotCreationException(errorDescription);
++    }
++  }
++
++  public boolean checkForError() {
++    return errorDescription != null;
++  }
++}
+diff --git a/hbase-server/src/main/java/org/apache/hadoop/hbase/regionserver/Store.java b/hbase-server/src/main/java/org/apache/hadoop/hbase/regionserver/Store.java
+index 0e7d797..ef7440d 100644
+--- a/hbase-server/src/main/java/org/apache/hadoop/hbase/regionserver/Store.java
++++ b/hbase-server/src/main/java/org/apache/hadoop/hbase/regionserver/Store.java
+@@ -54,6 +54,7 @@ import org.apache.hadoop.hbase.RemoteExceptionHandler;
+ import org.apache.hadoop.hbase.backup.HFileArchiver;
+ import org.apache.hadoop.hbase.client.Scan;
+ import org.apache.hadoop.hbase.io.HeapSize;
++import org.apache.hadoop.hbase.io.HFileLink;
+ import org.apache.hadoop.hbase.io.hfile.CacheConfig;
+ import org.apache.hadoop.hbase.io.hfile.Compression;
+ import org.apache.hadoop.hbase.io.hfile.HFile;
+@@ -432,7 +433,7 @@ public class Store extends SchemaConfigured implements HStore {
+       final Path p = files[i].getPath();
+       // Check for empty file. Should never be the case but can happen
+       // after data loss in hdfs for whatever reason (upgrade, etc.): HBASE-646
+-      if (this.fs.getFileStatus(p).getLen() <= 0) {
++      if (!HFileLink.isHFileLink(p) && this.fs.getFileStatus(p).getLen() <= 0) {
+         LOG.warn("Skipping " + p + " because its empty. HBASE-646 DATA LOSS?");
+         continue;
+       }
+diff --git a/hbase-server/src/main/java/org/apache/hadoop/hbase/regionserver/StoreFile.java b/hbase-server/src/main/java/org/apache/hadoop/hbase/regionserver/StoreFile.java
+index b1b1cb6..b74cc44 100644
+--- a/hbase-server/src/main/java/org/apache/hadoop/hbase/regionserver/StoreFile.java
++++ b/hbase-server/src/main/java/org/apache/hadoop/hbase/regionserver/StoreFile.java
+@@ -38,6 +38,7 @@ import org.apache.commons.logging.Log;
+ import org.apache.commons.logging.LogFactory;
+ import org.apache.hadoop.classification.InterfaceAudience;
+ import org.apache.hadoop.conf.Configuration;
++import org.apache.hadoop.fs.FSDataInputStream;
+ import org.apache.hadoop.fs.FileStatus;
+ import org.apache.hadoop.fs.FileSystem;
+ import org.apache.hadoop.fs.Path;
+@@ -46,8 +47,10 @@ import org.apache.hadoop.hbase.HDFSBlocksDistribution;
+ import org.apache.hadoop.hbase.KeyValue;
+ import org.apache.hadoop.hbase.KeyValue.KVComparator;
+ import org.apache.hadoop.hbase.client.Scan;
++import org.apache.hadoop.hbase.fs.HFileSystem;
+ import org.apache.hadoop.hbase.io.HalfStoreFileReader;
+ import org.apache.hadoop.hbase.io.Reference;
++import org.apache.hadoop.hbase.io.HFileLink;
+ import org.apache.hadoop.hbase.io.encoding.DataBlockEncoding;
+ import org.apache.hadoop.hbase.io.hfile.CacheConfig;
+ import org.apache.hadoop.hbase.io.hfile.BlockType;
+@@ -152,6 +155,9 @@ public class StoreFile extends SchemaConfigured {
+   // If this StoreFile references another, this is the other files path.
+   private Path referencePath;
+ 
++  // If this storefile is a link to another, this is the link instance.
++  private HFileLink link;
++
+   // Block cache configuration and reference.
+   private final CacheConfig cacheConf;
+ 
+@@ -246,9 +252,14 @@ public class StoreFile extends SchemaConfigured {
+     this.dataBlockEncoder =
+         dataBlockEncoder == null ? NoOpDataBlockEncoder.INSTANCE
+             : dataBlockEncoder;
+-    if (isReference(p)) {
++
++    if (HFileLink.isHFileLink(p)) {
++      this.link = new HFileLink(conf, p);
++      LOG.debug("Store file " + p + " is a link");
++    } else if (isReference(p)) {
+       this.reference = Reference.read(fs, p);
+       this.referencePath = getReferredToFile(this.path);
++      LOG.debug("Store file " + p + " is a reference");
+     }
+ 
+     if (BloomFilterFactory.isGeneralBloomEnabled(conf)) {
+@@ -315,6 +326,13 @@ public class StoreFile extends SchemaConfigured {
+     return m.groupCount() > 1 && m.group(2) != null;
+   }
+ 
++  /**
++   * @return True if this is a StoreFile Link
++   */
++  boolean isLink() {
++    return this.link != null;
++  }
++
+   /*
+    * Return path to the file referred to by a Reference.  Presumes a directory
+    * hierarchy of <code>${hbase.rootdir}/tablename/regionname/familyname</code>.
+@@ -474,6 +492,7 @@ public class StoreFile extends SchemaConfigured {
+       Path referencePath = getReferredToFile(p);
+       return computeRefFileHDFSBlockDistribution(fs, reference, referencePath);
+     } else {
++      if (HFileLink.isHFileLink(p)) p = HFileLink.getReferencedPath(fs, p);
+       FileStatus status = fs.getFileStatus(p);
+       long length = status.getLen();
+       return FSUtils.computeHDFSBlocksDistribution(fs, status, 0, length);
+@@ -489,7 +508,12 @@ public class StoreFile extends SchemaConfigured {
+       this.hdfsBlocksDistribution = computeRefFileHDFSBlockDistribution(
+         this.fs, this.reference, this.referencePath);
+     } else {
+-      FileStatus status = this.fs.getFileStatus(this.path);
++      Path path = this.path;
++      if (HFileLink.isHFileLink(path)) {
++        path = HFileLink.getReferencedPath(this.fs, path);
++      }
++
++      FileStatus status = this.fs.getFileStatus(path);
+       long length = status.getLen();
+       this.hdfsBlocksDistribution = FSUtils.computeHDFSBlocksDistribution(
+         this.fs, status, 0, length);
+@@ -510,6 +534,10 @@ public class StoreFile extends SchemaConfigured {
+       this.reader = new HalfStoreFileReader(this.fs, this.referencePath,
+           this.cacheConf, this.reference,
+           dataBlockEncoder.getEncodingInCache());
++    } else if (isLink()) {
++      long size = link.getFileStatus(fs).getLen();
++      this.reader = new Reader(this.fs, this.path, link, size, this.cacheConf,
++                               dataBlockEncoder.getEncodingInCache(), true);
+     } else {
+       this.reader = new Reader(this.fs, this.path, this.cacheConf,
+           dataBlockEncoder.getEncodingInCache());
+@@ -868,6 +896,8 @@ public class StoreFile extends SchemaConfigured {
+    * @return <tt>true</tt> if the file could be a valid store file, <tt>false</tt> otherwise
+    */
+   public static boolean validateStoreFileName(String fileName) {
++    if (HFileLink.isHFileLink(fileName))
++      return(true);
+     return !fileName.contains("-");
+   }
+ 
+@@ -1257,6 +1287,23 @@ public class StoreFile extends SchemaConfigured {
+       bloomFilterType = BloomType.NONE;
+     }
+ 
++    public Reader(FileSystem fs, Path path, HFileLink hfileLink, long size,
++        CacheConfig cacheConf, DataBlockEncoding preferredEncodingInCache,
++        boolean closeIStream) throws IOException {
++      super(path);
++
++      FSDataInputStream in = hfileLink.open(fs);
++      FSDataInputStream inNoChecksum = in;
++      if (fs instanceof HFileSystem) {
++        FileSystem noChecksumFs = ((HFileSystem)fs).getNoChecksumFs();
++        inNoChecksum = hfileLink.open(noChecksumFs);
++      }
++
++      reader = HFile.createReaderWithEncoding(fs, path, in, inNoChecksum,
++                  size, cacheConf, preferredEncodingInCache, closeIStream);
++      bloomFilterType = BloomType.NONE;
++    }
++
+     /**
+      * ONLY USE DEFAULT CONSTRUCTOR FOR UNIT TESTS
+      */
+diff --git a/hbase-server/src/main/java/org/apache/hadoop/hbase/regionserver/snapshot/GlobalSnapshotRequestHandler.java b/hbase-server/src/main/java/org/apache/hadoop/hbase/regionserver/snapshot/GlobalSnapshotRequestHandler.java
+index da284f1..41dddb3 100644
+--- a/hbase-server/src/main/java/org/apache/hadoop/hbase/regionserver/snapshot/GlobalSnapshotRequestHandler.java
++++ b/hbase-server/src/main/java/org/apache/hadoop/hbase/regionserver/snapshot/GlobalSnapshotRequestHandler.java
+@@ -93,8 +93,10 @@ public class GlobalSnapshotRequestHandler extends
+           .getTableDesc());
+ 
+       // 3.1 asynchronously add reference for the WALs
+-      submitTask(new WALReferenceOperation(snapshot, errorMonitor, this.log.getDir(),
+-          rss.getConfiguration(), rss.getFileSystem(), rss.getServerName().toString()));
++      WALReferenceOperation walRefOp = new WALReferenceOperation(snapshot, errorMonitor, this.log.getDir(),
++          rss.getConfiguration(), rss.getFileSystem(), rss.getServerName().toString());
++      this.log.rollWriter(true);
++      submitTask(walRefOp);
+ 
+       // 4. Wait for the regions and the wal to complete or an error
+       // wait for the regions to complete their snapshotting
+diff --git a/hbase-server/src/main/java/org/apache/hadoop/hbase/regionserver/wal/HLog.java b/hbase-server/src/main/java/org/apache/hadoop/hbase/regionserver/wal/HLog.java
+index 5c8bcd6..807bcff 100644
+--- a/hbase-server/src/main/java/org/apache/hadoop/hbase/regionserver/wal/HLog.java
++++ b/hbase-server/src/main/java/org/apache/hadoop/hbase/regionserver/wal/HLog.java
+@@ -129,7 +129,7 @@ public class HLog implements Syncable {
+   private static final String RECOVERED_EDITS_DIR = "recovered.edits";
+   private static final Pattern EDITFILES_NAME_PATTERN =
+     Pattern.compile("-?[0-9]+");
+-  static final String RECOVERED_LOG_TMPFILE_SUFFIX = ".temp";
++ public static final String RECOVERED_LOG_TMPFILE_SUFFIX = ".temp";
+   
+   private final FileSystem fs;
+   private final Path dir;
+diff --git a/hbase-server/src/main/java/org/apache/hadoop/hbase/snapshot/SnapshotDescriptor.java b/hbase-server/src/main/java/org/apache/hadoop/hbase/snapshot/SnapshotDescriptor.java
+index d8555a7..0df80a5 100644
+--- a/hbase-server/src/main/java/org/apache/hadoop/hbase/snapshot/SnapshotDescriptor.java
++++ b/hbase-server/src/main/java/org/apache/hadoop/hbase/snapshot/SnapshotDescriptor.java
+@@ -23,6 +23,7 @@ import java.io.IOException;
+ import java.util.Map;
+ 
+ import org.apache.hadoop.conf.Configuration;
++import org.apache.hadoop.fs.FSDataInputStream;
+ import org.apache.hadoop.fs.FSDataOutputStream;
+ import org.apache.hadoop.fs.FileSystem;
+ import org.apache.hadoop.fs.Path;
+@@ -266,6 +267,19 @@ public class SnapshotDescriptor extends ClusterOperation implements Writable,
+         + ", creationTime=" + getCreationTime() + ", type=" + type;
+   }
+ 
++  public static SnapshotDescriptor read(final Path dir, final FileSystem fs)
++    throws IOException {
++      SnapshotDescriptor snapshot = new SnapshotDescriptor();
++      Path snapshotInfo = new Path(dir, SnapshotDescriptor.SNAPSHOTINFO_FILE);
++      FSDataInputStream in = fs.open(snapshotInfo);
++      try {
++        snapshot.readFields(in);
++      } finally {
++        in.close();
++      }
++      return snapshot;
++    }
++
+   /**
+    * Write the snapshot descriptor information into a file under <code>dir</code>
+    * @param snapshot snapshot descriptor
+@@ -346,15 +360,23 @@ public class SnapshotDescriptor extends ClusterOperation implements Writable,
+   }
+ 
+   public static class SnapshotBuilder {
+-
+     private final SnapshotDescriptor snapshot;
++
++    public SnapshotBuilder(SnapshotDescriptor snapshot) {
++      this(snapshot.tableName, snapshot.snapshotName, snapshot.type);
++    }
++
+     /**
+      * @param tableName
+      * @param snapshotName
+      */
+     public SnapshotBuilder(byte[] tableName, byte[] snapshotName) {
++        this(tableName, snapshotName, Type.Timestamp);
++    }
++
++    public SnapshotBuilder(byte[] tableName, byte[] snapshotName, Type type) {
+       this.snapshot = new SnapshotDescriptor();
+-      this.setName(snapshotName).setTable(tableName).setType(SnapshotDescriptor.Type.Timestamp);
++      this.setName(snapshotName).setTable(tableName).setType(type);
+     }
+ 
+     public SnapshotDescriptor build() {
+@@ -411,4 +433,4 @@ public class SnapshotDescriptor extends ClusterOperation implements Writable,
+       return this;
+     }
+   }
+-}
+\ No newline at end of file
++}
+diff --git a/hbase-server/src/main/java/org/apache/hadoop/hbase/snapshot/SnapshotNotExistsException.java b/hbase-server/src/main/java/org/apache/hadoop/hbase/snapshot/SnapshotNotExistsException.java
+new file mode 100644
+index 0000000..8162ec5
+--- /dev/null
++++ b/hbase-server/src/main/java/org/apache/hadoop/hbase/snapshot/SnapshotNotExistsException.java
+@@ -0,0 +1,40 @@
++/**
++ * Licensed to the Apache Software Foundation (ASF) under one
++ * or more contributor license agreements.  See the NOTICE file
++ * distributed with this work for additional information
++ * regarding copyright ownership.  The ASF licenses this file
++ * to you under the Apache License, Version 2.0 (the
++ * "License"); you may not use this file except in compliance
++ * with the License.  You may obtain a copy of the License at
++ *
++ *     http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++package org.apache.hadoop.hbase.snapshot;
++
++import java.io.IOException;
++
++/**
++ * Thrown when a snapshot not exists but should
++ */
++public class SnapshotNotExistsException extends IOException {
++  private static final long serialVersionUID = 1L << 7 - 1L;
++  /** default constructor */
++  public SnapshotNotExistsException() {
++    super();
++  }
++
++  /**
++   * Constructor
++   *
++   * @param s message
++   */
++  public SnapshotNotExistsException(String s) {
++    super(s);
++  }
++}
+diff --git a/hbase-server/src/test/java/org/apache/hadoop/hbase/client/TestRestoreSnapshotFromClient.java b/hbase-server/src/test/java/org/apache/hadoop/hbase/client/TestRestoreSnapshotFromClient.java
+new file mode 100644
+index 0000000..317cccf
+--- /dev/null
++++ b/hbase-server/src/test/java/org/apache/hadoop/hbase/client/TestRestoreSnapshotFromClient.java
+@@ -0,0 +1,235 @@
++/**
++ * Licensed to the Apache Software Foundation (ASF) under one
++ * or more contributor license agreements.  See the NOTICE file
++ * distributed with this work for additional information
++ * regarding copyright ownership.  The ASF licenses this file
++ * to you under the Apache License, Version 2.0 (the
++ * "License"); you may not use this file except in compliance
++ * with the License.  You may obtain a copy of the License at
++ *
++ *     http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++package org.apache.hadoop.hbase.client;
++
++import static org.junit.Assert.assertArrayEquals;
++import static org.junit.Assert.assertEquals;
++import static org.junit.Assert.assertTrue;
++
++import java.io.IOException;
++import java.util.List;
++
++import org.apache.commons.logging.Log;
++import org.apache.commons.logging.LogFactory;
++import org.apache.hadoop.conf.Configuration;
++import org.apache.hadoop.fs.FileSystem;
++import org.apache.hadoop.fs.Path;
++import org.apache.hadoop.hbase.HBaseTestingUtility;
++import org.apache.hadoop.hbase.HConstants;
++import org.apache.hadoop.hbase.HTableDescriptor;
++import org.apache.hadoop.hbase.MediumTests;
++import org.apache.hadoop.hbase.snapshot.SnapshotDescriptor;
++import org.apache.hadoop.hbase.snapshot.SnapshotTestingUtils;
++import org.apache.hadoop.hbase.util.Bytes;
++import org.apache.hadoop.hbase.util.FSTableDescriptors;
++import org.apache.hadoop.hbase.util.FSUtils;
++import org.junit.After;
++import org.junit.AfterClass;
++import org.junit.Before;
++import org.junit.BeforeClass;
++import org.junit.Test;
++import org.junit.experimental.categories.Category;
++
++/**
++ * Test mount/restore snapshots from the client
++ */
++@Category(MediumTests.class)
++public class TestRestoreSnapshotFromClient {
++  private static final Log LOG = LogFactory.getLog(TestSnapshotFromClient.class);
++  private static final HBaseTestingUtility UTIL = new HBaseTestingUtility();
++  private static final int NUM_RS = 2;
++  private static final String STRING_TABLE_NAME = "test";
++  private static final byte[] TEST_FAM = Bytes.toBytes("fam");
++  private static final byte[] TABLE_NAME = Bytes.toBytes(STRING_TABLE_NAME);
++  private static final byte[] SNAPSHOT_NAME = Bytes.toBytes("snapshot");
++
++  /**
++   * Setup the config for the cluster
++   */
++  @BeforeClass
++  public static void setupCluster() throws Exception {
++    setupConf(UTIL.getConfiguration());
++    UTIL.startMiniCluster(NUM_RS);
++  }
++
++  private static void setupConf(Configuration conf) {
++    // disable the ui
++    conf.setInt("hbase.regionsever.info.port", -1);
++    // change the flush size to a small amount, regulating number of store files
++    conf.setInt("hbase.hregion.memstore.flush.size", 25000);
++    // so make sure we get a compaction when doing a load, but keep around some
++    // files in the store
++    conf.setInt("hbase.hstore.compaction.min", 10);
++    conf.setInt("hbase.hstore.compactionThreshold", 10);
++    // block writes if we get to 12 store files
++    conf.setInt("hbase.hstore.blockingStoreFiles", 12);
++    // drop the number of attempts for the hbase admin
++    conf.setInt("hbase.client.retries.number", 5);
++  }
++
++  @Before
++  public void setup() throws Exception {
++    UTIL.createTable(TABLE_NAME, TEST_FAM);
++
++    HBaseAdmin admin = UTIL.getHBaseAdmin();
++
++    // put some stuff in the table
++    UTIL.loadTable(new HTable(UTIL.getConfiguration(), TABLE_NAME), TEST_FAM);
++
++    // take a snapshot
++    createSnapshot();
++
++    // put more stuff in the table
++    loadMoreData(new HTable(UTIL.getConfiguration(), TABLE_NAME), TEST_FAM);
++  }
++
++  @After
++  public void tearDown() throws Exception {
++    removeSnapshot();
++
++    UTIL.deleteTable(TABLE_NAME);
++    // and cleanup the archive directory
++    try {
++      UTIL.getTestFileSystem().delete(new Path(UTIL.getDefaultRootDirPath(), ".archive"), true);
++    } catch (IOException e) {
++      LOG.warn("Failure to delete archive directory", e);
++    }
++  }
++
++  @AfterClass
++  public static void cleanupTest() throws Exception {
++    try {
++      UTIL.shutdownMiniCluster();
++    } catch (Exception e) {
++      // NOOP;
++    }
++  }
++
++  @Test
++  public void testRestoreSnapshot() throws Exception {
++    HBaseAdmin admin = UTIL.getHBaseAdmin();
++
++    int nrows = UTIL.countRows(new HTable(UTIL.getConfiguration(), TABLE_NAME));
++    assertEquals("Number of rows pre-restore", 35152, nrows);
++
++    LOG.debug("FS state before restore:");
++      FSUtils.logFileSystemState(UTIL.getTestFileSystem(),
++        FSUtils.getRootDir(UTIL.getConfiguration()), LOG);
++
++    admin.disableTable(TABLE_NAME);
++    try {
++      admin.restoreSnapshot(SNAPSHOT_NAME, TABLE_NAME);
++    } finally {
++      admin.enableTable(TABLE_NAME);
++    }
++
++    LOG.debug("FS state after restore:");
++      FSUtils.logFileSystemState(UTIL.getTestFileSystem(),
++        FSUtils.getRootDir(UTIL.getConfiguration()), LOG);
++
++
++    nrows = UTIL.countRows(new HTable(UTIL.getConfiguration(), TABLE_NAME));
++    assertEquals("Number of rows post-restore", 17576, nrows);
++  }
++
++  @Test
++  public void testMountSnapshot() throws Exception {
++    byte[] tableName = Bytes.toBytes("test-mount");
++    HBaseAdmin admin = UTIL.getHBaseAdmin();
++    UTIL.createTable(tableName, TEST_FAM);
++    try {
++      int nrows = UTIL.countRows(new HTable(UTIL.getConfiguration(), tableName));
++      assertEquals("Number of rows pre-mount", 0, nrows);
++
++      admin.disableTable(tableName);
++      try {
++        admin.restoreSnapshot(SNAPSHOT_NAME, tableName);
++      } finally {
++        admin.enableTable(tableName);
++      }
++
++      nrows = UTIL.countRows(new HTable(UTIL.getConfiguration(), tableName));
++      assertEquals("Number of rows post-mount", 17576, nrows);
++    } finally {
++      UTIL.deleteTable(tableName);
++    }
++  }
++
++  public void createSnapshot() throws Exception {
++    HBaseAdmin admin = UTIL.getHBaseAdmin();
++
++    int nrows = UTIL.countRows(new HTable(UTIL.getConfiguration(), TABLE_NAME));
++    assertEquals("Number of rows pre-snapshot", 17576, nrows);
++
++    // make sure we don't fail on listing snapshots
++    assertEquals("Have some previous snapshots", 0, admin.listSnapshots().length);
++
++    // disable the table
++    admin.disableTable(TABLE_NAME);
++    try {
++      LOG.debug("FS state before snapshot:");
++      FSUtils.logFileSystemState(UTIL.getTestFileSystem(),
++        FSUtils.getRootDir(UTIL.getConfiguration()), LOG);
++
++      // take a snapshot of the disabled table
++      admin.snapshot(SNAPSHOT_NAME, TABLE_NAME);
++      LOG.debug("Snapshot completed.");
++
++      // make sure we have the snapshot
++      SnapshotDescriptor[] snapshots = admin.listSnapshots();
++      assertEquals("Snapshot wasn't taken.", 1, snapshots.length);
++
++      // make sure its a valid snapshot
++      FileSystem fs = UTIL.getHBaseCluster().getMaster().getMasterFileSystem().getFileSystem();
++      Path rootDir = UTIL.getHBaseCluster().getMaster().getMasterFileSystem().getRootDir();
++      SnapshotTestingUtils.confirmSnapshotValid(snapshots[0], TABLE_NAME, TEST_FAM, rootDir, admin,
++        fs, false);
++    } finally {
++      admin.enableTable(TABLE_NAME);
++    }
++  }
++
++  private void removeSnapshot() throws Exception {
++    HBaseAdmin admin = UTIL.getHBaseAdmin();
++    admin.deleteSnapshot(SNAPSHOT_NAME);
++    SnapshotDescriptor[] snapshots = admin.listSnapshots();
++    assertEquals("Snapshot wasn't deleted.", 0, snapshots.length);
++  }
++
++  public int loadMoreData(final HTable t, final byte[] f) throws IOException {
++    t.setAutoFlush(false);
++    byte[] k = new byte[4];
++    int rowCount = 0;
++    for (byte b1 = 'a'; b1 <= 'z'; b1++) {
++      for (byte b2 = 'a'; b2 <= 'z'; b2++) {
++        for (byte b3 = 'a'; b3 <= 'z'; b3++) {
++          k[0] = 'a';
++          k[1] = b1;
++          k[2] = b2;
++          k[3] = b3;
++          Put put = new Put(k);
++          put.add(f, null, k);
++          t.put(put);
++          rowCount++;
++        }
++      }
++    }
++    t.flushCommits();
++    return rowCount;
++  }
++}
