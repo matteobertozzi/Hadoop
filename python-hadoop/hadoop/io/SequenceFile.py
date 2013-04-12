@@ -181,7 +181,7 @@ class Writer(object):
             raise IOError("Wrong key class %s is not %s" % (type(key), self._key_class))
 
         if type(value) != self._value_class:
-            raise IOError("Wrong Value class %s is not %s" % (type(key), self._key_class))
+            raise IOError("Wrong Value class %s is not %s" % (type(value), self._value_class))
 
         key_buffer = DataOutputBuffer()
         key.write(key_buffer)
