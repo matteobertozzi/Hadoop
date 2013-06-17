@@ -283,8 +283,10 @@ class Reader(object):
         self._metadata = None
 
         self._record = DataInputBuffer()
-
         self._initialize(path, start, length)
+
+    def getStream(self, path):
+        return DataInputStream(FileInputStream(path))
 
     def close(self):
         self._stream.close()
@@ -431,7 +433,7 @@ class Reader(object):
         return self._sync_seen
 
     def _initialize(self, path, start, length):
-        self._stream = DataInputStream(FileInputStream(path))
+        self._stream = self.getStream(path)
 
         if length == 0:
             self._end = self._stream.getPos() + self._stream.length()
