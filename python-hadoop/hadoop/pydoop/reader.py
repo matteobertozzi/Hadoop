@@ -13,6 +13,8 @@ TODO: profile this, and the rest of hadoop.io! cython speedups,
 perhaps?
 
 """
+import logging
+logger = logging.getLogger(__name__)
 try:
     import pydoop.pipes as pp
     from pydoop import hdfs
@@ -26,12 +28,14 @@ class HdfsFileInputStream(InputStream.FileInputStream):
     """meets hadoop interface, at least all the bits that
     FileInputStream implements"""
     def __init__(self, path):
-        self._fd = hdfs.open(path, 'rb') # todo: get user
+        logger.debug("FileInputStream path: %s", path)
+        self._fd = hdfs.open(path, 'r') # todo: get user
         self._length = self._fd.size
 
 
 class _HdfsSequenceFileReader(SequenceFile.Reader):
     def getStream(self, path):
+        logger.debug("_HdfsSequenceFileReader path: %s", path)
         return InputStream.DataInputStream(HdfsFileInputStream(path))
 
 
@@ -48,6 +52,9 @@ class SequenceFileReader(pp.RecordReader):
     def __init__(self, context):
         super(SequenceFileReader, self).__init__()
         self.isplit = pp.InputSplit(context.getInputSplit())
+        logger.debug("isplit filename: %s", self.isplit.filename)
+        logger.debug("isplit offset: %s", self.isplit.offset)
+        logger.debug("isplit length: %s", self.isplit.length)
         self.seq_file = _HdfsSequenceFileReader(path = self.isplit.filename,
                                                 start = self.isplit.offset,
                                                 length = self.isplit.length)
@@ -56,12 +63,13 @@ class SequenceFileReader(pp.RecordReader):
         value_class = self.seq_file.getValueClass()
         self._key = key_class()
         self._value = value_class()
+        logger.debug("done initializing pydoop.reader.SequenceFileReader")
 
     def close(self):
         self.seq_file.close()
 
     def next(self):
-        if (self.reader.next(self._key, self._value)):
+        if (self.seq_file.next(self._key, self._value)):
             return (True, self._key.toString(), self._value.toString())
         else:
             return (False, "", "")

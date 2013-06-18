@@ -3,7 +3,7 @@
 from setuptools import setup
 
 setup(name='Hadoop',
-      version='0.1.2',
+      version='0.1.3',
       description='Python Hadoop I/O Utilities',
       license="Apache Software License 2.0 (ASF)",
       author='Matteo Bertozzi',
