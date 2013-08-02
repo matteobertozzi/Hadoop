@@ -29,7 +29,7 @@ from WritableUtils import readVInt, writeVInt
 from Writable import Writable
 from OutputStream import FileOutputStream, DataOutputStream, DataOutputBuffer
 from InputStream import FileInputStream, DataInputStream, DataInputBuffer
-from VersionMismatchException import VersionMismatchException
+from VersionMismatchException import VersionMismatchException, VersionPrefixException
 
 from Text import Text
 
@@ -446,6 +446,10 @@ class Reader(object):
         version_block = self._stream.read(len(VERSION))
 
         self._version = version_block[len(VERSION_PREFIX)]
+        if not self._version.startswith(VERSION_PREFIX):
+            raise VersionPrefixException(VERSION_PREFIX,
+                                         self._version[0:len(VERSION_PREFIX)])
+
         if self._version > VERSION[len(VERSION_PREFIX)]:
             raise VersionMismatchException(VERSION[len(VERSION_PREFIX)],
                                            self._version)
