@@ -27,8 +27,9 @@ from compress import CodecPool
 
 from WritableUtils import readVInt, writeVInt
 from Writable import Writable
-from OutputStream import *
-from InputStream import *
+from OutputStream import FileOutputStream, DataOutputStream, DataOutputBuffer
+from InputStream import FileInputStream, DataInputStream, DataInputBuffer
+from VersionMismatchException import VersionMismatchException
 
 from Text import Text
 
