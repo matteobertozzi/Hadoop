@@ -36,7 +36,8 @@ from Text import Text
 BLOCK_COMPRESS_VERSION  = '\x04'
 CUSTOM_COMPRESS_VERSION = '\x05'
 VERSION_WITH_METADATA   = '\x06'
-VERSION = 'SEQ' + VERSION_WITH_METADATA
+VERSION_PREFIX = 'SEQ'
+VERSION = VERSION_PREFIX + VERSION_WITH_METADATA
 
 SYNC_ESCAPE = -1
 SYNC_HASH_SIZE = 16
@@ -444,9 +445,10 @@ class Reader(object):
         # Parse Header
         version_block = self._stream.read(len(VERSION))
 
-        self._version = version_block[3]
-        if self._version > VERSION[3]:
-            raise VersionMismatchException(VERSION[3], self._version)
+        self._version = version_block[len(VERSION_PREFIX)]
+        if self._version > VERSION[len(VERSION_PREFIX)]:
+            raise VersionMismatchException(VERSION[len(VERSION_PREFIX)],
+                                           self._version)
 
         if self._version < BLOCK_COMPRESS_VERSION:
             # Same as below, but with UTF8 Deprecated Class
