@@ -445,11 +445,11 @@ class Reader(object):
         # Parse Header
         version_block = self._stream.read(len(VERSION))
 
-        self._version = version_block[len(VERSION_PREFIX)]
-        if not self._version.startswith(VERSION_PREFIX):
+        if not version_block.startswith(VERSION_PREFIX):
             raise VersionPrefixException(VERSION_PREFIX,
-                                         self._version[0:len(VERSION_PREFIX)])
+                                         version_block[0:len(VERSION_PREFIX)])
 
+        self._version = version_block[len(VERSION_PREFIX)]
         if self._version > VERSION[len(VERSION_PREFIX)]:
             raise VersionMismatchException(VERSION[len(VERSION_PREFIX)],
                                            self._version)
