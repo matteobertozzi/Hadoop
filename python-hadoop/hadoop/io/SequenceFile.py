@@ -353,6 +353,9 @@ class Reader(object):
                 raise IOError("File is corrupt")
             self._sync_seen = True
 
+            if self._stream.getPos() >= self._end:
+                return None
+
             def _readBuffer():
                 length = readVInt(self._stream)
                 buf = self._stream.read(length)
