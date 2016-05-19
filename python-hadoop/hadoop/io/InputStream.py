@@ -35,6 +35,9 @@ class InputStream(object):
     def readByte(self):
         return self.read(1)
 
+    def readFully(self, length):
+        return self.read(length)
+
     def read(self, length):
         raise NotImplementedError
 
@@ -139,6 +142,9 @@ class DataInputStream(InputStream):
     def readByte(self):
         data = self._stream.read(1)
         return struct.unpack(">b", data)[0]
+
+    def readFully(self, length):
+        return [self.readByte() for _ in xrange(length)]
 
     def readUByte(self):
         data = self._stream.read(1)
