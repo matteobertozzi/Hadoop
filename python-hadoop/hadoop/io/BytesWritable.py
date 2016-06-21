@@ -28,4 +28,4 @@ class BytesWritable(AbstractValueWritable):
         self._value = data_input.readFully(size)
 
     def toString(self):
-        return ''.join(chr(x) for x in self._value)
+        return ''.join(chr(x % 256) for x in self._value)
